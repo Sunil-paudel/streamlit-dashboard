@@ -1,3 +1,10 @@
+import os
+import smtplib
+import ssl
+import unicodedata
+from email.message import EmailMessage
+from dotenv import load_dotenv
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -7,6 +14,9 @@ st.set_page_config(page_title="Moodle Engagement Dashboard", layout="wide")
 
 
 st.title("📊 Moodle Student Engagement Dashboard (from Log CSV)")
+
+# load environment variables (optional)
+load_dotenv()
 
 
 # -------------------- Upload --------------------
@@ -188,7 +198,7 @@ c5.metric("Active", int((summary["status"] == "✅ Active").sum()))
 st.divider()
 
 
-# -------------------- At-Risk Cards (FIXED: uses iterrows, no itertuples/_asdict) --------------------
+# -------------------- At-Risk Cards --------------------
 st.subheader("🚨 Students needing attention (At Risk)")
 at_risk = summary[summary["status"] == "⚠️ At Risk"].copy()
 
@@ -210,6 +220,98 @@ else:
 
 
 st.divider()
+
+
+# -------------------- E-mail notifier (FIXED SMTP) --------------------
+st.header("📮 Notify coordinator about At-Risk students")
+
+# coordinator e-mail + SMTP settings (fall back to env)
+coord_mail = st.text_input("Coordinator e-mail", value=os.getenv("COORD_EMAIL", ""))
+smtp_user = os.getenv("SMTP_USER")
+smtp_pass = os.getenv("SMTP_PASS")
+smtp_srv = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+smtp_port = int(os.getenv("SMTP_PORT", "587"))
+
+if st.button("📩 Send alert email", type="primary"):
+   if at_risk.empty:
+      st.info("No at-risk students to notify.")
+   else:
+      if not coord_mail:
+         st.error("Please enter a coordinator e-mail")
+      else:
+         body_lines = [
+            f"Moodle early-alert – {pd.Timestamp.now():%Y-%m-%d %H:%M}",
+            f"Students flagged as At Risk: {len(at_risk)}",
+            "",
+         ]
+         for _, r in at_risk.iterrows():
+            body_lines.append(f"{r['User full name']} — Inactive {int(r['inactive_days'])} days — Active days: {int(r['active_days'])}")
+         body = "\n".join(body_lines)
+
+         msg = EmailMessage()
+         msg["Subject"] = f"Moodle early-alert – {len(at_risk)} students"
+         msg["From"] = smtp_user or coord_mail
+         msg["To"] = coord_mail
+         msg.set_content(body)
+
+         try:
+            # sanitize SMTP credentials to ASCII (SMTP auth requires ASCII)
+            def _to_ascii(s: str) -> str:
+               if s is None:
+                  return s
+               # common smart quotes / dashes -> ascii equivalents
+               s = s.replace(""", '"').replace(""", '"').replace("'", "'").replace("'", "'")
+               s = s.replace("–", "-").replace("—", "-")
+               s = unicodedata.normalize('NFKD', s)
+               return s.encode('ascii', 'ignore').decode('ascii')
+
+            login_user = _to_ascii(smtp_user) if smtp_user else None
+            login_pass = _to_ascii(smtp_pass) if smtp_pass else None
+            if (smtp_user and login_user != smtp_user) or (smtp_pass and login_pass != smtp_pass):
+               st.warning("Non-ASCII characters were removed from SMTP credentials before sending.")
+
+            # Create SSL context
+            context = ssl.create_default_context()
+            
+            # Use SMTP with STARTTLS for port 587 (most common for Gmail)
+            if smtp_port == 587:
+                with smtplib.SMTP(smtp_srv, smtp_port, timeout=10) as server:
+                    server.ehlo()  # Identify ourselves
+                    server.starttls(context=context)  # Secure the connection
+                    server.ehlo()  # Re-identify ourselves over secure connection
+                    if login_user and login_pass:
+                        server.login(login_user, login_pass)
+                    server.send_message(msg)
+            # Use SMTP_SSL for port 465 (SSL from the start)
+            elif smtp_port == 465:
+                with smtplib.SMTP_SSL(smtp_srv, smtp_port, context=context, timeout=10) as server:
+                    if login_user and login_pass:
+                        server.login(login_user, login_pass)
+                    server.send_message(msg)
+            else:
+                st.error(f"Unsupported SMTP port: {smtp_port}. Use 587 (STARTTLS) or 465 (SSL).")
+                st.stop()
+                
+            st.success(f"✅ Mail sent to {coord_mail}")
+            if "notif_log" not in st.session_state:
+               st.session_state.notif_log = []
+            st.session_state.notif_log.append(f"{pd.Timestamp.now():%H:%M} – mail sent ({len(at_risk)} students)")
+            
+         except smtplib.SMTPAuthenticationError:
+            st.error("❌ Authentication failed. Check your SMTP username and password.")
+            st.info("💡 For Gmail: Use an App Password (requires 2FA enabled)")
+         except smtplib.SMTPException as e:
+            st.error(f"❌ SMTP error: {str(e)}")
+         except ssl.SSLError as e:
+            st.error(f"❌ SSL error: {str(e)}")
+            st.info("💡 Try running: /Applications/Python\\ 3.13/Install\\ Certificates.command")
+         except Exception as e:
+            st.error("❌ Send failed")
+            st.exception(e)
+
+if st.session_state.get("notif_log"):
+   with st.expander("Notification log"):
+      st.text("\n".join(st.session_state.notif_log))
 
 
 # -------------------- Tabs --------------------
@@ -301,6 +403,3 @@ with tab3:
        fig3 = px.bar(breakdown.head(20), x="event_name", y="count", title=f"Top events for {student}")
        fig3.update_layout(xaxis_tickangle=-30)
        st.plotly_chart(fig3, use_container_width=True)
-
-
-
