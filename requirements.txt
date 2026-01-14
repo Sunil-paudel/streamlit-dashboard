@@ -4,13 +4,23 @@ streamlit==1.40.2
 # Data & numeric stack
 pandas==2.2.3
 numpy==2.2.0
+python-dateutil
+pytz
 
 # Plotting & Analysis
 plotly
 matplotlib==3.9.2
 seaborn==0.13.2
 
-# Utilities
-python-dotenv
+# Moodle & Networking
 requests
+certifi
+python-dotenv
+
+# Email / Google (For future enhancements)
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+
+# Utilities
 watchdog
