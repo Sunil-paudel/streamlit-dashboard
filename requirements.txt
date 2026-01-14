@@ -1,6 +1,16 @@
-streamlit
-pandas
-numpy
+# Core framework
+streamlit==1.40.2
+
+# Data & numeric stack
+pandas==2.2.3
+numpy==2.2.0
+
+# Plotting & Analysis
 plotly
+matplotlib==3.9.2
+seaborn==0.13.2
+
+# Utilities
 python-dotenv
 requests
+watchdog
