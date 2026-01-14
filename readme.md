@@ -69,6 +69,16 @@ python3 -m pip install -r requirements.txt
 
 Ensure your requirements.txt includes Google services dependencies for Gmail SMTP and future Google integrations:
 
+.env file
+COORD_EMAIL=emailid
+SMTP_USER=emailid
+SMTP_PASS=app password
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=465
+MOODLE_URL=moodle url
+MOODLE_TOKEN= moodle token
+
+
 # Core
 streamlit
 pandas
