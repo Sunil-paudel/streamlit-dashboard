@@ -451,7 +451,9 @@ with tab6:
         detailed_df = pd.DataFrame(detailed_list)
 
         # Display the table
-        st.dataframe(detailed_df, width="stretch")
+        # st.dataframe(detailed_df, width="stretch")
+        st.dataframe(detailed_df, use_container_width=True)
+
 
         # CSV download
         csv = detailed_df.to_csv(index=False).encode('utf-8')
