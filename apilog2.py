@@ -310,20 +310,26 @@ with tab4:
         # -------- Custom Email Template --------
         st.markdown("---")
         st.subheader("📝 Customize Email Template")
-        st.info("💡 **Available Placeholders:** `{Name}`, `{Risk_Score}`, `{Assignments_Gap}`, `{Quizzes_Gap}`, `{Clicks}`, `{Days_Since_Last}`, `{Status}`")
+        st.info("💡 **Available Placeholders:** `{Name}`, `{Risk_Category}`, `{Assignments_Gap}`, `{Quizzes_Gap}`, `{Days_Since_Last}`")
         
         default_template = """Hi {Name},
 
-You are at risk of falling behind. Please see your current details:
+We’re reaching out to check in and offer support, as our learning system indicates that you may benefit from reviewing your current course engagement.
 
-- Risk Score: {Risk_Score}
-- Assignments Gap: {Assignments_Gap}
-- Quizzes Gap: {Quizzes_Gap}
-- Total Clicks: {Clicks}
-- Last Active: {Days_Since_Last} days ago
-- Status: {Status}
+Here’s a brief overview of your current progress:
 
-Please take immediate action to improve your performance."""
+• Risk category: {Risk_Category}
+• Pending assignments: {Assignments_Gap}
+• Pending quizzes: {Quizzes_Gap}
+• Course activity: Below class average
+• Last active: {Days_Since_Last} days ago
+
+These indicators help us identify students who may need additional support. If you’ve been facing any challenges—academic, technical, or personal—please know that help is available.
+
+We encourage you to log in, review your upcoming tasks, and reach out to your course coordinator or student support services if you need assistance. Taking early action can make a meaningful difference.
+
+Kind regards,
+Student Support Team"""
 
         email_template = st.text_area("Email Message Body", value=default_template, height=300)
 
@@ -338,12 +344,10 @@ Please take immediate action to improve your performance."""
                     try:
                         body = email_template.format(
                             Name=r['Name'],
-                            Risk_Score=r['Risk_Score'],
+                            Risk_Category=r['Risk_Category'],
                             Assignments_Gap=r['Assignments_Gap'],
                             Quizzes_Gap=r['Quizzes_Gap'],
-                            Clicks=int(r['Clicks']),
-                            Days_Since_Last=int(r['Days_Since_Last']),
-                            Status=r['Status']
+                            Days_Since_Last=int(r['Days_Since_Last'])
                         )
                     except KeyError as e:
                         st.error(f"❌ Placeholder error: {e}. Please check your template.")
@@ -354,7 +358,7 @@ Please take immediate action to improve your performance."""
                         st.code(body)
 
                     # Send email
-                    success = send_automated_email(r['Email'], "Risk Alert", body)
+                    success = send_automated_email(r['Email'], "A quick check-in about your course progress", body)
                     if success:
                         st.success(f"✅ Email sent to {r['Name']}")
                         sent_count += 1
