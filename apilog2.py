@@ -112,7 +112,7 @@ with st.sidebar.expander("Set Assessment Weights", expanded=True):
             }
             total_target += w
 
-st.sidebar.metric("Target Final Mark", f"{total_target}/100")
+st.sidebar.metric("Target Final Mark", f"{total_target} pts")
 
 
 
@@ -128,6 +128,8 @@ if not student_results:
     df = pd.DataFrame(columns=['User_ID', 'Name', 'Email', 'Final_Mark', 'Assignments_Gap', 'Quizzes_Gap'])
 else:
     df = pd.DataFrame(student_results)
+    # Add a display column for Marks / Total
+    df['Score'] = df['Final_Mark'].apply(lambda x: f"{x} / {total_target}")
 
 # ================== 6. LOG INTEGRATION ==================
 if not users_raw:
@@ -161,7 +163,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 with tab1:
     st.markdown("### 🛑 Early Prevention Alerts")
     if not df.empty and 'Risk_Category' in df.columns:
-        early_warn_df = df[df['Risk_Category'].isin(['🔴 Critical','🟡 Warning'])][['Name','Assignments_Gap','Quizzes_Gap','Risk_Category']]
+        early_warn_df = df[df['Risk_Category'].isin(['🔴 Critical','🟡 Warning'])][['Name', 'Score', 'Assignments_Gap','Quizzes_Gap','Risk_Category']]
         if not early_warn_df.empty:
             st.dataframe(early_warn_df, width="stretch")
         else:
@@ -171,7 +173,7 @@ with tab1:
 
     m1, m2, m3, m4 = st.columns(4)
     if not df.empty:
-        m1.metric("Avg Final Mark", f"{df['Final_Mark'].mean():.2f}")
+        m1.metric("Avg Final Mark", f"{df['Final_Mark'].mean():.2f} / {total_target}")
         if 'Status' in df.columns:
             m2.metric("Inactive Students", len(df[df['Status']=="Inactive"]))
         else:
@@ -195,10 +197,18 @@ with tab2:
             color='Risk_Category',
             color_discrete_map=color_map,
             hover_name='Name',
-            hover_data=['Assignments_Gap', 'Quizzes_Gap', 'Risk_Score'],
+            hover_data={
+                'Final_Mark': False,  # Hide raw mark since we show 'Score'
+                'Score': True,
+                'Assignments_Gap': True,
+                'Quizzes_Gap': True,
+                'Risk_Score': True,
+                'Engagement_Score': ':.1f'
+            },
             labels={
-                'Engagement_Score':'Engagement',
-                'Final_Mark':'Grade',
+                'Engagement_Score':'Engagement (%)',
+                'Final_Mark':'Marks Achieved',
+                'Score': 'Current Score',
                 'Assignments_Gap': 'Missed Assignments',
                 'Quizzes_Gap': 'Missed Quizzes',
                 'Risk_Score': 'Risk Score'
@@ -222,7 +232,7 @@ with tab3:
                 s = subset.iloc[0]
                 st.markdown(f"### Student: {s['Name']}")
                 col1, col2, col3, col4, col5 = st.columns(5)
-                col1.metric("Final Mark", f"{s['Final_Mark']}/100")
+                col1.metric("Final Mark", f"{s['Final_Mark']} / {total_target}")
                 col2.metric("Engagement", f"{s['Engagement_Score']}%")
                 col3.metric("Dwell Hours", f"{s['Dwell_Hours']:.2f}h")
                 col4.metric("Total Clicks", f"{int(s['Clicks'])}")
@@ -421,7 +431,7 @@ with tab6:
                 "User_ID": u['User_ID'],
                 "Name": u['Name'],
                 "Email": u['Email'],
-                "Final_Mark (%)": u['Final_Mark'],
+                "Score": f"{u['Final_Mark']} / {total_target}",
                 "Clicks": int(u.get('Clicks', 0)),
                 "Dwell_Hours": round(u.get('Dwell_Hours', 0), 2),
                 "Days_Since_Last": int(u.get('Days_Since_Last', 0)),
