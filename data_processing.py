@@ -18,14 +18,16 @@ import streamlit as st
 from api_service import fetch_user_grades_batch
 from utils import calculate_dwell_time
 
-def calculate_student_metrics(users_raw, weight_config, course_id):
+def calculate_student_metrics(users_raw, weight_config, course_id, submission_data=None):
     """
     Iterates through enrolled students and calculates their incomplete assignments,
-    quizzes, and current weighted marks.
+    quizzes, and current weighted marks, as well as submission timing.
     """
     student_results = []
     teacher_results = []
     staff_roles = ['teacher', 'editingteacher', 'manager', 'coursecreator']
+
+    # submission_data is {assign_id: {user_id: submission_dict}}
 
     for user in users_raw:
         user_roles = [r.get('shortname', '').lower() for r in user.get('roles', [])]
@@ -48,9 +50,30 @@ def calculate_student_metrics(users_raw, weight_config, course_id):
         for key, config in weight_config.items():
             r_ob, m_ob, pts_ob = 0.0, 0.0, 0.0
             matched_grade_id = None
+            submission_timing = "N/A"
+            due_date_str = "N/A"
 
             # ================= ASSIGNMENTS =================
             if config['type'] == 'assign':
+                # Get due date from weight_config if available (added later in apilog2)
+                due_timestamp = config.get('duedate', 0)
+                if due_timestamp > 0:
+                    from datetime import datetime
+                    due_date_str = datetime.fromtimestamp(due_timestamp).strftime('%Y-%m-%d')
+
+                # Check submission
+                if submission_data and config['id'] in submission_data:
+                    user_sub = submission_data[config['id']].get(user['id'])
+                    if user_sub and user_sub.get('status') != 'new':
+                        # Submission found
+                        sub_time = user_sub.get('timemodified', 0)
+                        if sub_time > 0 and due_timestamp > 0:
+                            diff_days = (due_timestamp - sub_time) / (24 * 3600)
+                            if diff_days >= 0:
+                                submission_timing = f"{int(diff_days)}d before"
+                            else:
+                                submission_timing = f"{int(abs(diff_days))}d late"
+
                 for g in grade_items:
                     g_id = g.get('id')
                     if g_id in matched_items:
@@ -77,13 +100,6 @@ def calculate_student_metrics(users_raw, weight_config, course_id):
                         matched_grade_id = g_id
                         break
 
-                    # Partial name match
-                    elif config['name'].lower().strip() in g_name:
-                        r_ob = float(g.get('graderaw') or 0.0)
-                        m_ob = float(g.get('grademax') or 100.0)
-                        matched_grade_id = g_id
-                        break
-
                 if matched_grade_id:
                     matched_items.add(matched_grade_id)
 
@@ -93,6 +109,15 @@ def calculate_student_metrics(users_raw, weight_config, course_id):
 
             # ================= QUIZZES =================
             elif config['type'] == 'quiz':
+                # Quiz closing time
+                due_timestamp = config.get('duedate', 0)
+                if due_timestamp > 0:
+                    from datetime import datetime
+                    due_date_str = datetime.fromtimestamp(due_timestamp).strftime('%Y-%m-%d')
+                
+                # Note: Quiz submission timing usually requires fetching attempts
+                # For now, we mainly focus on assignments as per user request
+
                 for g in grade_items:
                     g_inst = g.get('iteminstance')
                     g_name = (g.get('itemname') or '').lower().strip()
@@ -125,6 +150,8 @@ def calculate_student_metrics(users_raw, weight_config, course_id):
             row[f"raw_{key}"] = r_ob
             row[f"max_{key}"] = m_ob
             row[f"pts_{key}"] = round(pts_ob, 2)
+            row[f"timing_{key}"] = submission_timing
+            row[f"due_{key}"] = due_date_str
             row['Final_Mark'] += pts_ob
 
         row['Final_Mark'] = round(row['Final_Mark'], 2)
@@ -166,10 +193,11 @@ def process_logs_and_merge(df, log_file, users_raw):
                 total_dwell_hours = dwell_stats['Dwell_Hours'].sum()
 
                 # Stats for clicks and last activity
+                max_log_time = logs[time_c].max()
                 stats = student_logs.groupby(name_c).agg(Clicks=(time_c, 'count'), Last=(time_c, 'max')).reset_index()
-                stats['Status'] = (logs[time_c].max() - stats['Last']).dt.days.apply(lambda x: "Active" if x < 14 else "Inactive")
+                stats['Days_Since_Last'] = (max_log_time - stats['Last']).dt.days
+                stats['Status'] = stats['Days_Since_Last'].apply(lambda x: "Active" if x < 14 else "Inactive")
                 
-
                 # Merge dwell + stats into df
                 df = pd.merge(df, pd.merge(stats, dwell_stats, on=name_c), left_on='Name', right_on=name_c, how='left')
                 
@@ -183,7 +211,7 @@ def calculate_risk_scores(df, weight_config):
     Calculates composite risk scores and determines risk categories.
     """
     # Ensure columns exist
-    for col in ['Clicks', 'Dwell_Hours']:
+    for col in ['Clicks', 'Dwell_Hours', 'Days_Since_Last']:
         if col not in df: df[col] = 0
     if 'Status' not in df: df['Status'] = "No Data"
     
@@ -219,8 +247,8 @@ def calculate_risk_scores(df, weight_config):
         # 1. CRITICAL: Missed 3+ Quizzes OR 2+ Assignments OR Risk Score > 75
         if row['Quizzes_Gap'] >= 3 or row['Assignments_Gap'] >= 2 or row['Risk_Score'] > 75:
             return '🔴 Critical'
-        # 2. WARNING: Missed 1+ Quiz OR 1+ Assignment OR Risk Score > 50
-        elif row['Quizzes_Gap'] >= 1 or row['Assignments_Gap'] >= 1 or row['Risk_Score'] > 50:
+        # 2. WARNING: Missed 2+ Quiz OR 1+ Assignment OR Risk Score > 50
+        elif row['Quizzes_Gap'] >= 2 or row['Assignments_Gap'] >= 1 or row['Risk_Score'] > 50:
             return '🟡 Warning'
         # 3. SAFE
         else:

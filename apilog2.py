@@ -56,7 +56,7 @@ coord_email_input = st.sidebar.text_input("Coordinator Email", value=COORD_EMAIL
 st.sidebar.markdown("---")
 st.sidebar.subheader("⚖️ Assessment Weight Setup")
 
-users_raw, quizzes_raw, assigns_raw = fetch_course_metadata(course_id)
+users_raw, quizzes_raw, assigns_raw, submission_data = fetch_course_metadata(course_id)
 weight_config = {}
 total_target = 0
 
@@ -64,12 +64,24 @@ with st.sidebar.expander("Set Assessment Weights", expanded=True):
     for q in quizzes_raw:
         w = st.slider(f"Quiz: {q['name'][:25]}", 0.0, 20.0, 5.0, key=f"q_{q['id']}")
         if w > 0:
-            weight_config[f"quiz_{q['id']}"] = {'id': int(q['id']), 'weight': w, 'type': 'quiz', 'name': q['name']}
+            weight_config[f"quiz_{q['id']}"] = {
+                'id': int(q['id']), 
+                'weight': w, 
+                'type': 'quiz', 
+                'name': q['name'],
+                'duedate': q.get('timeclose', 0)
+            }
             total_target += w
     for a in assigns_raw:
         w = st.slider(f"Assign: {a['name'][:25]}", 0.0, 50.0, 30.0, key=f"a_{a['id']}")
         if w > 0:
-            weight_config[f"assign_{a['id']}"] = {'id': int(a['id']), 'weight': w, 'type': 'assign', 'name': a['name']}
+            weight_config[f"assign_{a['id']}"] = {
+                'id': int(a['id']), 
+                'weight': w, 
+                'type': 'assign', 
+                'name': a['name'],
+                'duedate': a.get('duedate', 0)
+            }
             total_target += w
 
 st.sidebar.metric("Target Final Mark", f"{total_target}/100")
@@ -82,7 +94,7 @@ st.sidebar.metric("Target Final Mark", f"{total_target}/100")
 st.title("🎯 Moodle Analytics Hub")
 
 # Calculate metrics using data_processing module
-student_results, teacher_results = calculate_student_metrics(users_raw, weight_config, course_id)
+student_results, teacher_results = calculate_student_metrics(users_raw, weight_config, course_id, submission_data)
 
 if not student_results:
     df = pd.DataFrame(columns=['User_ID', 'Name', 'Email', 'Final_Mark', 'Assignments_Gap', 'Quizzes_Gap'])
@@ -132,7 +144,7 @@ with tab1:
             m2.metric("Inactive Students", len(df[df['Status']=="Inactive"]))
         else:
              m2.metric("Inactive Students", 0)
-        m3.metric("Total Dwell Hours", f"{total_dwell_hours:.1f}h")
+        m3.metric("Total Dwell Hours", f"{total_dwell_hours:.2f}h")
         if 'Risk_Score' in df.columns:
             m4.metric("Avg Risk Score", f"{df['Risk_Score'].mean():.1f}%")
         else:
@@ -177,20 +189,24 @@ with tab3:
             if not subset.empty:
                 s = subset.iloc[0]
                 st.markdown(f"### Student: {s['Name']}")
-                col1, col2, col3, col4 = st.columns(4)
+                col1, col2, col3, col4, col5 = st.columns(5)
                 col1.metric("Final Mark", f"{s['Final_Mark']}/100")
                 col2.metric("Engagement", f"{s['Engagement_Score']}%")
                 col3.metric("Dwell Hours", f"{s['Dwell_Hours']:.2f}h")
-                col4.metric("Risk Score", f"{s['Risk_Score']:.1f} ({s['Risk_Category']})")
+                col4.metric("Total Clicks", f"{int(s['Clicks'])}")
+                col5.metric("Last Active", f"{int(s['Days_Since_Last'])} days ago")
+                st.markdown(f"**Risk Score:** {s['Risk_Score']:.1f} ({s['Risk_Category']})")
 
                 breakdown = []
                 for k,v in weight_config.items():
                     breakdown.append({
                         "Assessment": v['name'],
+                        "Due Date": s.get(f"due_{k}", "N/A"),
                         "Raw": s.get(f"raw_{k}",0),
                         "Points": s.get(f"pts_{k}",0),
                         "Max": s.get(f"max_{k}",v['weight']),
-                        "Missing": "✅" if s.get(f"pts_{k}",0)>0 else "⚠️"
+                        "Timing": s.get(f"timing_{k}", "N/A"),
+                        "Status": "✅" if s.get(f"pts_{k}",0)>0 else "⚠️"
                     })
                 st.table(pd.DataFrame(breakdown))
             else:
@@ -217,7 +233,7 @@ with tab4:
         preview_targets = df[
             (df['Risk_Score'] >= t_val) | 
             (df['Risk_Category'].isin(cat_filter))
-        ][['Name', 'Email', 'Risk_Score', 'Risk_Category', 'Assignments_Gap', 'Quizzes_Gap', 'Status']].copy()
+        ][['Name', 'Email', 'Risk_Score', 'Risk_Category', 'Assignments_Gap', 'Quizzes_Gap', 'Clicks', 'Days_Since_Last', 'Status']].copy()
 
         st.markdown(f"### Target List (Score ≥ {t_val} OR Categories: {', '.join(cat_filter)})")
         if not preview_targets.empty:
@@ -234,7 +250,7 @@ with tab4:
                         default=True,
                     )
                 },
-                disabled=["Name", "Email", "Risk_Score", "Assignments_Gap", "Quizzes_Gap", "Status"],
+                disabled=["Name", "Email", "Risk_Score", "Assignments_Gap", "Quizzes_Gap", "Clicks", "Days_Since_Last", "Status"],
                 hide_index=True,
                 use_container_width=True
             )
@@ -245,6 +261,26 @@ with tab4:
             st.info("No students exceed the selected Risk Score threshold.")
             final_targets = pd.DataFrame()
 
+        # -------- Custom Email Template --------
+        st.markdown("---")
+        st.subheader("📝 Customize Email Template")
+        st.info("💡 **Available Placeholders:** `{Name}`, `{Risk_Score}`, `{Assignments_Gap}`, `{Quizzes_Gap}`, `{Clicks}`, `{Days_Since_Last}`, `{Status}`")
+        
+        default_template = """Hi {Name},
+
+You are at risk of falling behind. Please see your current details:
+
+- Risk Score: {Risk_Score}
+- Assignments Gap: {Assignments_Gap}
+- Quizzes Gap: {Quizzes_Gap}
+- Total Clicks: {Clicks}
+- Last Active: {Days_Since_Last} days ago
+- Status: {Status}
+
+Please take immediate action to improve your performance."""
+
+        email_template = st.text_area("Email Message Body", value=default_template, height=300)
+
         # -------- Student Emails --------
         if st.button(f"📨 Email Selected Students ({len(final_targets)})"):
             if final_targets.empty:
@@ -252,20 +288,24 @@ with tab4:
             else:
                 sent_count = 0
                 for _, r in final_targets.iterrows():
-                    body = f"""Hi {r['Name']},
+                    # Format individual email using placeholders
+                    try:
+                        body = email_template.format(
+                            Name=r['Name'],
+                            Risk_Score=r['Risk_Score'],
+                            Assignments_Gap=r['Assignments_Gap'],
+                            Quizzes_Gap=r['Quizzes_Gap'],
+                            Clicks=int(r['Clicks']),
+                            Days_Since_Last=int(r['Days_Since_Last']),
+                            Status=r['Status']
+                        )
+                    except KeyError as e:
+                        st.error(f"❌ Placeholder error: {e}. Please check your template.")
+                        break
 
-You are at risk of falling behind. Please see your current details:
-
-- Risk Score: {r['Risk_Score']}
-- Assignments Gap: {r['Assignments_Gap']}
-- Quizzes Gap: {r['Quizzes_Gap']}
-- Status: {r['Status']}
-
-Please take immediate action to improve your performance.
-"""
                     # Preview email
-                    st.markdown(f"#### Preview Email to {r['Name']} ({r['Email']})")
-                    st.code(body)
+                    with st.expander(f"Preview Email to {r['Name']}", expanded=False):
+                        st.code(body)
 
                     # Send email
                     success = send_automated_email(r['Email'], "Risk Alert", body)
@@ -275,7 +315,7 @@ Please take immediate action to improve your performance.
                     else:
                         st.error(f"❌ Failed to send email to {r['Name']}")
 
-                st.info(f"Total emails successfully sent: {sent_count}/{len(preview_targets)}")
+                st.info(f"Total emails successfully sent: {sent_count}/{len(final_targets)}")
 
         # -------- Coordinator Summary --------
         st.markdown("---")
@@ -313,7 +353,7 @@ with tab5:
     - **Risk Score** = 100 - (0.3 * Engagement + 0.4 * Completion + 0.3 * Performance)
     - **Risk Categories**:
         - 🔴 Critical: Risk Score > 75 OR 3+ missed quizzes OR 2+ missed assignments.
-        - 🟡 Warning: Risk Score 50-75 OR 1+ missed quiz OR 1+ missed assignment.
+        - 🟡 Warning: Risk Score 50-75 OR 2+ missed quizzes OR 1+ missed assignment.
         - 🟢 Safe: Risk Score < 50.
     """)
 
@@ -331,6 +371,9 @@ with tab6:
                 "Name": u['Name'],
                 "Email": u['Email'],
                 "Final_Mark (%)": u['Final_Mark'],  # Already weighted total in %
+                "Clicks": int(u.get('Clicks', 0)),
+                "Days_Since_Last": int(u.get('Days_Since_Last', 0)),
+                "Status": u.get('Status', 'N/A'),
             }
 
             # Add individual assessment as percentage

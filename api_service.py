@@ -36,13 +36,21 @@ def fetch_course_metadata(course_id):
         
         assigns_res = mc.get_assignments([course_id]) or {}
         assigns = []
+        submissions = {}
         if assigns_res.get('courses'):
             assigns = assigns_res['courses'][0].get('assignments', [])
+            assign_ids = [a['id'] for a in assigns]
+            if assign_ids:
+                subs_res = mc.get_submissions(assign_ids) or {}
+                # Map submissions by assignment ID and user ID
+                for assignment in subs_res.get('assignments', []):
+                    a_id = assignment['assignmentid']
+                    submissions[a_id] = {s['userid']: s for s in assignment.get('submissions', [])}
             
-        return users, quizzes, assigns
+        return users, quizzes, assigns, submissions
     except Exception as e:
-        st.warning(f"Failed to fetch course metadata for ID {course_id}. Displaying empty dashboard.")
-        return [], [], []
+        st.warning(f"Failed to fetch course metadata for ID {course_id}. Error: {e}")
+        return [], [], [], {}
 
 @st.cache_data(ttl=600)
 def fetch_user_grades_batch(course_id, user_id):
