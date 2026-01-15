@@ -160,10 +160,10 @@ def calculate_student_metrics(users_raw, weight_config, course_id, submission_da
         
     return student_results, teacher_results
 
-def process_logs_and_merge(df, log_file, users_raw):
+def process_logs_and_merge(df, log_file, users_raw, window_days=180):
     """
     Processes the uploaded Moodle log file and merges dwell time / activity stats 
-    into the main student DataFrame.
+    into the main student DataFrame, restricted by a time window.
     """
     total_dwell_hours = 0.0
     if log_file:
@@ -174,6 +174,14 @@ def process_logs_and_merge(df, log_file, users_raw):
             if time_c and name_c:
                 logs[time_c] = pd.to_datetime(logs[time_c], errors='coerce')
                 logs = logs.dropna(subset=[time_c])
+
+                # Identify the reference "now" from the logs
+                max_log_time = logs[time_c].max()
+                
+                # Filter logs by the selected window (days)
+                if window_days:
+                    cutoff = max_log_time - pd.Timedelta(days=window_days)
+                    logs = logs[logs[time_c] >= cutoff]
 
                 # Create a set of enrolled student names (exclude staff)
                 student_names = [u['fullname'] for u in users_raw
@@ -193,7 +201,6 @@ def process_logs_and_merge(df, log_file, users_raw):
                 total_dwell_hours = dwell_stats['Dwell_Hours'].sum()
 
                 # Stats for clicks and last activity
-                max_log_time = logs[time_c].max()
                 stats = student_logs.groupby(name_c).agg(Clicks=(time_c, 'count'), Last=(time_c, 'max')).reset_index()
                 stats['Days_Since_Last'] = (max_log_time - stats['Last']).dt.days
                 stats['Status'] = stats['Days_Since_Last'].apply(lambda x: "Active" if x < 14 else "Inactive")

@@ -49,7 +49,9 @@ else:
     course_id = st.sidebar.number_input("Enter Course ID", value=1)
 
 log_file = st.sidebar.file_uploader("📂 Upload Moodle Activity Logs (CSV)", type=["csv"])
-# Editable Coordinator Email
+
+# Log Analysis Window
+log_window_days = st.sidebar.slider("Log Analysis Window (Days)", 7, 180, 30, help="Only analyze activity from the last X days found in the log file.")
 st.sidebar.markdown("---")
 # coord_email_input is defined later in original code, but we can init default here or keep consistent
 coord_email_input = st.sidebar.text_input("Coordinator Email", value=COORD_EMAIL)
@@ -102,7 +104,7 @@ else:
     df = pd.DataFrame(student_results)
 
 # ================== 6. LOG INTEGRATION ==================
-df, total_dwell_hours = process_logs_and_merge(df, log_file, users_raw)
+df, total_dwell_hours = process_logs_and_merge(df, log_file, users_raw, window_days=log_window_days)
 
 # ================== 7. RISK SCORING ==================
 if df.empty:
