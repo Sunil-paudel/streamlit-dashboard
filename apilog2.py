@@ -25,26 +25,48 @@ import os
 from datetime import datetime
 
 # Import custom components
+# Import custom components
 from config import COORD_EMAIL
 from utils import send_automated_email
-from api_service import fetch_all_courses, fetch_course_metadata
+from api_service import fetch_all_courses, fetch_course_metadata, is_api_ready
 from data_processing import calculate_student_metrics, process_logs_and_merge, calculate_risk_scores
 import plotly.express as px
 
 st.set_page_config(page_title="Student Risk Prevention Hub", layout="wide")
 
+# ================== 3. API STATUS CHECK ==================
+api_ok, api_msg = is_api_ready()
+if not api_ok:
+    st.sidebar.error(f"🚫 **Moodle Connection Issue**\n\n{api_msg}")
+    st.info("👋 **Welcome! Please check your Moodle configuration in the .env file.**")
+    st.stop()
+else:
+    # Add a Refresh Button to clear cache
+    if st.sidebar.button("🔄 Refresh Course Data"):
+        st.cache_data.clear()
+        st.rerun()
+
 # ================== 4. SIDEBAR COURSE & WEIGHT CONFIG ==================
 st.sidebar.header("🎓 Course Setup")
 courses_df = fetch_all_courses()
 if not courses_df.empty:
-    courses_df['display'] = courses_df['id'].astype(str) + " - " + courses_df['fullname']
-    
-    # Exclude the first row from selection if needed, or keeping original logic
-    # Original logic: course_options = courses_df['display'].iloc[1:].tolist()
-    course_options = courses_df['display'].iloc[1:].tolist()
-    
-    choice = st.sidebar.selectbox("Select Course", options=course_options)
-    course_id = int(choice.split(" - ")[0])
+    # Check if 'id' and 'fullname' exist (sometimes API returns errors as list of dicts)
+    if 'id' in courses_df.columns and 'fullname' in courses_df.columns:
+        # Filter out course ID 1 (Site/Front Page)
+        courses_df = courses_df[courses_df['id'] != 1]
+        
+        courses_df['display'] = courses_df['id'].astype(str) + " - " + courses_df['fullname']
+        course_options = courses_df['display'].tolist()
+        
+        if course_options:
+            choice = st.sidebar.selectbox("Select Course", options=course_options)
+            course_id = int(choice.split(" - ")[0])
+        else:
+            st.sidebar.warning("No courses found (excluding Site Home).")
+            course_id = st.sidebar.number_input("Enter Course ID", value=1)
+    else:
+        st.sidebar.error("Could not parse course list. Check API permissions.")
+        course_id = st.sidebar.number_input("Enter Course ID", value=1)
 else:
     course_id = st.sidebar.number_input("Enter Course ID", value=1)
 
@@ -58,7 +80,7 @@ coord_email_input = st.sidebar.text_input("Coordinator Email", value=COORD_EMAIL
 st.sidebar.markdown("---")
 st.sidebar.subheader("⚖️ Assessment Weight Setup")
 
-users_raw, quizzes_raw, assigns_raw, submission_data = fetch_course_metadata(course_id)
+users_raw, quizzes_raw, assigns_raw, submission_data, quiz_attempts_raw = fetch_course_metadata(course_id)
 weight_config = {}
 total_target = 0
 
@@ -68,10 +90,12 @@ with st.sidebar.expander("Set Assessment Weights", expanded=True):
         if w > 0:
             weight_config[f"quiz_{q['id']}"] = {
                 'id': int(q['id']), 
+                'cmid': q.get('coursemodule'),
                 'weight': w, 
                 'type': 'quiz', 
                 'name': q['name'],
-                'duedate': q.get('timeclose', 0)
+                'duedate': q.get('timeclose', 0),
+                'visible': q.get('visible', 1)
             }
             total_target += w
     for a in assigns_raw:
@@ -79,10 +103,12 @@ with st.sidebar.expander("Set Assessment Weights", expanded=True):
         if w > 0:
             weight_config[f"assign_{a['id']}"] = {
                 'id': int(a['id']), 
+                'cmid': a.get('cmid'),
                 'weight': w, 
                 'type': 'assign', 
                 'name': a['name'],
-                'duedate': a.get('duedate', 0)
+                'duedate': a.get('duedate', 0),
+                'visible': a.get('visible', 1)
             }
             total_target += w
 
@@ -96,7 +122,7 @@ st.sidebar.metric("Target Final Mark", f"{total_target}/100")
 st.title("🎯 Moodle Analytics Hub")
 
 # Calculate metrics using data_processing module
-student_results, teacher_results = calculate_student_metrics(users_raw, weight_config, course_id, submission_data)
+student_results, teacher_results = calculate_student_metrics(users_raw, weight_config, course_id, submission_data, quiz_attempts_raw)
 
 if not student_results:
     df = pd.DataFrame(columns=['User_ID', 'Name', 'Email', 'Final_Mark', 'Assignments_Gap', 'Quizzes_Gap'])
@@ -104,7 +130,11 @@ else:
     df = pd.DataFrame(student_results)
 
 # ================== 6. LOG INTEGRATION ==================
-df, total_dwell_hours = process_logs_and_merge(df, log_file, users_raw, window_days=log_window_days)
+if not users_raw:
+    st.info("👋 **Welcome! Please select a Course in the sidebar to get started.**")
+    total_dwell_hours = 0.0
+else:
+    df, total_dwell_hours = process_logs_and_merge(df, log_file, users_raw, window_days=log_window_days)
 
 # ================== 7. RISK SCORING ==================
 if df.empty:
@@ -133,7 +163,7 @@ with tab1:
     if not df.empty and 'Risk_Category' in df.columns:
         early_warn_df = df[df['Risk_Category'].isin(['🔴 Critical','🟡 Warning'])][['Name','Assignments_Gap','Quizzes_Gap','Risk_Category']]
         if not early_warn_df.empty:
-            st.dataframe(early_warn_df, use_container_width=True)
+            st.dataframe(early_warn_df, width="stretch")
         else:
             st.success("All students are on track! ✅")
     else:
@@ -177,7 +207,7 @@ with tab2:
         )
         fig.update_yaxes(range=[0,100], title_text="Final Mark (0-100)")
         fig.update_xaxes(title_text="Engagement Score")
-        st.plotly_chart(fig,use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info("Not enough data for scatter plot.")
 
@@ -201,14 +231,28 @@ with tab3:
 
                 breakdown = []
                 for k,v in weight_config.items():
+                    pts = s.get(f"pts_{k}", 0)
+                    is_overdue = s.get(f"overdue_{k}", False)
+                    is_inprogress = s.get(f"inprogress_{k}", False)
+                    is_viewed = s.get(f"viewed_{k}", False)
+                    
+                    if pts > 0:
+                        status_icon = "✅"
+                    elif is_overdue:
+                        status_icon = "⚠️"
+                    elif is_inprogress or is_viewed:
+                        status_icon = "🔄"
+                    else:
+                        status_icon = "⏳"
+
                     breakdown.append({
                         "Assessment": v['name'],
                         "Due Date": s.get(f"due_{k}", "N/A"),
-                        "Raw": s.get(f"raw_{k}",0),
-                        "Points": s.get(f"pts_{k}",0),
-                        "Max": s.get(f"max_{k}",v['weight']),
+                        "Raw": s.get(f"raw_{k}", 0),
+                        "Points": pts,
+                        "Max": s.get(f"max_{k}", v['weight']),
                         "Timing": s.get(f"timing_{k}", "N/A"),
-                        "Status": "✅" if s.get(f"pts_{k}",0)>0 else "⚠️"
+                        "Status": status_icon
                     })
                 st.table(pd.DataFrame(breakdown))
             else:
@@ -254,7 +298,7 @@ with tab4:
                 },
                 disabled=["Name", "Email", "Risk_Score", "Assignments_Gap", "Quizzes_Gap", "Clicks", "Days_Since_Last", "Status"],
                 hide_index=True,
-                use_container_width=True
+                width="stretch"
             )
             
             # Filter for selected students
@@ -349,13 +393,14 @@ Details:
 with tab5:
     st.markdown("### Methodology")
     st.write("""
-    - **Engagement Score (30%)**: Normalized 0-100 scale derived from 15% Clicks + 15% Dwell Time.
-    - **Assessment Completion (40%)**: Percentage of released assignments and quizzes that have been submitted/graded.
-    - **Performance Component (30%)**: Current weighted marks across all assessments.
-    - **Risk Score** = 100 - (0.3 * Engagement + 0.4 * Completion + 0.3 * Performance)
+    - **Unified Engagement Score (60%)**: A composite score of activity and progress:
+        - **Activity (50% of engagement)**: Combined Clicks and Dwell Time (page activity).
+        - **Assessment Completion (50% of engagement)**: Percentage of **overdue** items submitted.
+    - **Performance Component (40%)**: Quality of marks (percentage of available points achieved).
+    - **Risk Score** = 100 - (0.6 * Unified Engagement + 0.4 * Performance)
     - **Risk Categories**:
-        - 🔴 Critical: Risk Score > 75 OR 3+ missed quizzes OR 2+ missed assignments.
-        - 🟡 Warning: Risk Score 50-75 OR 2+ missed quizzes OR 1+ missed assignment.
+        - 🔴 Critical: Risk Score > 75 OR 3+ missed **overdue** quizzes OR 2+ missed **overdue** assignments.
+        - 🟡 Warning: Risk Score 50-75 OR 2+ missed **overdue** quizzes OR 1+ missed **overdue** assignment.
         - 🟢 Safe: Risk Score < 50.
     """)
 
@@ -363,17 +408,18 @@ with tab5:
 with tab6:
     st.markdown("### Student Detailed Performance (Percentage Marks)")
 
-    if not student_results:
+    if df.empty:
         st.info("No data.")
     else:
         detailed_list = []
-        for u in student_results:
+        for _, u in df.iterrows():
             row = {
                 "User_ID": u['User_ID'],
                 "Name": u['Name'],
                 "Email": u['Email'],
-                "Final_Mark (%)": u['Final_Mark'],  # Already weighted total in %
+                "Final_Mark (%)": u['Final_Mark'],
                 "Clicks": int(u.get('Clicks', 0)),
+                "Dwell_Hours": round(u.get('Dwell_Hours', 0), 2),
                 "Days_Since_Last": int(u.get('Days_Since_Last', 0)),
                 "Status": u.get('Status', 'N/A'),
             }
@@ -381,7 +427,8 @@ with tab6:
             # Add individual assessment as percentage
             for k, cfg in weight_config.items():
                 r = u.get(f"raw_{k}", 0.0)
-                m = u.get(f"max_{k}", cfg['weight'])
+                # Use the 'max' column computed during metrics calculation
+                m = u.get(f"max_{k}", cfg['weight']) or cfg['weight']
                 perc = (r / m * 100) if m > 0 else 0
                 row[f"{cfg['name']} (%)"] = round(perc, 1)
 
@@ -390,7 +437,7 @@ with tab6:
         detailed_df = pd.DataFrame(detailed_list)
 
         # Display the table
-        st.dataframe(detailed_df, use_container_width=True)
+        st.dataframe(detailed_df, width="stretch")
 
         # CSV download
         csv = detailed_df.to_csv(index=False).encode('utf-8')

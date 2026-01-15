@@ -28,10 +28,28 @@ load_dotenv()
 # ---------- config ----------
 MOODLE_URL = os.getenv("MOODLE_URL")
 TOKEN      = os.getenv("MOODLE_TOKEN")
-ENDPOINT   = f"{MOODLE_URL}/webservice/rest/server.php"
+
+# Normalize URL
+if MOODLE_URL and MOODLE_URL.endswith('/'):
+    MOODLE_URL = MOODLE_URL[:-1]
+
+ENDPOINT = f"{MOODLE_URL}/webservice/rest/server.php" if MOODLE_URL else None
+
+def check_connection():
+    """Returns (bool, message) about the Moodle connection status."""
+    if not MOODLE_URL or "your-moodle-site" in MOODLE_URL:
+        return False, "Moodle URL is missing or default."
+    if not TOKEN or "your-token-here" in TOKEN:
+        return False, "Moodle API Token is missing or default."
+    return True, "Configuration present."
 
 # ---------- low-level caller ----------
-def moodle_call(function, params=None):
+def moodle_call(function, params=None, silent=False):
+    is_ok, msg = check_connection()
+    if not is_ok:
+        # We don't want to spam errors if we know it's not configured
+        return {}
+
     try:
         payload = {
             "wstoken": TOKEN,
@@ -39,22 +57,32 @@ def moodle_call(function, params=None):
             "moodlewsrestformat": "json",
             **(params or {})
         }
-        r = requests.get(ENDPOINT, params=payload, timeout=15)
+        r = requests.get(ENDPOINT, params=payload, timeout=10)
         r.raise_for_status()
         json = r.json()
         
         # Handle Moodle-specific exceptions returned in JSON
         if isinstance(json, dict) and json.get("exception"):
-            st.error(f"Moodle API Exception ({function}): {json.get('message')}")
+            if not silent:
+                # Check for invalid token specifically
+                if json.get("errorcode") == "invalidtoken":
+                     st.error("🔑 **Invalid Moodle Token**: Please verify your token in the settings.")
+                else:
+                     st.error(f"Moodle API Exception ({function}): {json.get('message')}")
             return {}
             
         return json
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            st.error(f"🌐 **Moodle URL Not Found**: The URL `{MOODLE_URL}` seems incorrect (404).")
+        else:
+            st.error(f"HTTP Error: {e}")
+        return {}
     except requests.exceptions.RequestException as e:
-        # Catch connection errors, timeouts, etc.
-        st.error(f"Network Error: Unable to reach Moodle server at {MOODLE_URL}. Please check if the server is running and the URL is correct.")
+        st.error(f"📡 **Connection Error**: Unable to reach Moodle at `{MOODLE_URL}`. Please check your internet or URL.")
         return {}
     except Exception as e:
-        st.error(f"Unexpected Error in Moodle call ({function}): {e}")
+        st.error(f"Unexpected Error: {e}")
         return {}
 
 # ---------- existing high-level helpers ----------
@@ -210,3 +238,10 @@ def get_quizzes_by_courses(courseid):
     # Moodle REST requires array parameters to be explicitly indexed
     params = {"courseids[0]": courseid} 
     return moodle_call("mod_quiz_get_quizzes_by_courses", params)
+
+@st.cache_data(ttl=60)
+def get_all_quiz_attempts(quizid, status="all"):
+    """Get all attempts for a specific quiz ID across all users."""
+    # We use silent=True here because some quizzes might throw "Record not found" 
+    # if they are in a strange state in Moodle (e.g. newly created or hidden)
+    return moodle_call("mod_quiz_get_attempts", {"quizid": quizid, "status": status}, silent=True)

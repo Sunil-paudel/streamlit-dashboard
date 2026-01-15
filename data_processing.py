@@ -15,10 +15,11 @@
 
 import pandas as pd
 import streamlit as st
-from api_service import fetch_user_grades_batch
+import time
+from api_service import fetch_user_grades_batch, fetch_completion_status
 from utils import calculate_dwell_time
 
-def calculate_student_metrics(users_raw, weight_config, course_id, submission_data=None):
+def calculate_student_metrics(users_raw, weight_config, course_id, submission_data=None, quiz_attempts=None):
     """
     Iterates through enrolled students and calculates their incomplete assignments,
     quizzes, and current weighted marks, as well as submission timing.
@@ -43,6 +44,7 @@ def calculate_student_metrics(users_raw, weight_config, course_id, submission_da
         row['Assignments_Gap'] = 0
         row['Quizzes_Gap'] = 0
         grade_items = fetch_user_grades_batch(course_id, user['id'])
+        completion_statuses = fetch_completion_status(course_id, user['id'])
 
         # Track matched grade items to prevent duplicates
         matched_items = set()
@@ -88,24 +90,45 @@ def calculate_student_metrics(users_raw, weight_config, course_id, submission_da
 
                     # Match by ID
                     if g_inst and int(g_inst) == config['id']:
-                        r_ob = float(g.get('graderaw') or 0.0)
-                        m_ob = float(g.get('grademax') or 100.0)
+                        r_ob = float(g.get('graderaw') if g.get('graderaw') is not None else 0.0)
+                        m_ob = float(g.get('grademax') if (g.get('grademax') is not None and float(g.get('grademax')) > 0) else 100.0)
                         matched_grade_id = g_id
                         break
 
                     # Exact name match
                     elif g_name == config['name'].lower().strip():
-                        r_ob = float(g.get('graderaw') or 0.0)
-                        m_ob = float(g.get('grademax') or 100.0)
+                        r_ob = float(g.get('graderaw') if g.get('graderaw') is not None else 0.0)
+                        m_ob = float(g.get('grademax') if (g.get('grademax') is not None and float(g.get('grademax')) > 0) else 100.0)
                         matched_grade_id = g_id
                         break
 
                 if matched_grade_id:
                     matched_items.add(matched_grade_id)
 
+                # Check if it's already overdue
+                # due_timestamp is from config.get('duedate',0)
+                now = time.time()
+                is_overdue = (due_timestamp > 0 and now > due_timestamp)
+                
+                row[f"overdue_{key}"] = is_overdue
+
+                # Check completion/viewed status
+                is_viewed = False
+                cmid = config.get('cmid')
+                if cmid:
+                    comp = next((c for c in completion_statuses if c.get('cmid') == cmid), None)
+                    if comp and comp.get('viewed') == 1:
+                        is_viewed = True
+                row[f"viewed_{key}"] = is_viewed
+
                 if r_ob == 0.0:
-                    row['Assignments_Gap'] += 1
-                    m_ob = config['weight']
+                    # If no grade found or grade is 0, use weight as the denominator for gaps
+                    # but only if it's actually overdue or we need a denominator
+                    if m_ob <= 0:
+                        m_ob = config['weight']
+                    
+                    if is_overdue:
+                        row['Assignments_Gap'] += 1
 
             # ================= QUIZZES =================
             elif config['type'] == 'quiz':
@@ -127,21 +150,59 @@ def calculate_student_metrics(users_raw, weight_config, course_id, submission_da
 
                     # Match by ID
                     if g_inst and int(g_inst) == config['id']:
-                        r_ob = float(g.get('graderaw') or 0.0)
-                        m_ob = float(g.get('grademax') or config['weight'])
+                        r_ob = float(g.get('graderaw') if g.get('graderaw') is not None else 0.0)
+                        # Ensure we get the actual maximum possible raw grade for accurate normalization
+                        m_ob = float(g.get('grademax') if (g.get('grademax') is not None and float(g.get('grademax')) > 0) else config['weight'])
                         matched_grade_id = g.get('id')
                         break
 
                     # Name match
                     elif g_name == config['name'].lower().strip():
-                        r_ob = float(g.get('graderaw') or 0.0)
-                        m_ob = float(g.get('grademax') or config['weight'])
+                        r_ob = float(g.get('graderaw') if g.get('graderaw') is not None else 0.0)
+                        m_ob = float(g.get('grademax') if (g.get('grademax') is not None and float(g.get('grademax')) > 0) else config['weight'])
                         matched_grade_id = g.get('id')
                         break
 
+                if matched_grade_id:
+                    matched_items.add(matched_grade_id)
+
+                now = time.time()
+                # A quiz is considered 'overdue' if:
+                # 1. It has a due_timestamp in the past
+                # 2. OR it has NO due_timestamp but is currently 'visible'
+                is_visible = config.get('visible', 1) == 1
+                is_overdue = (due_timestamp > 0 and now > due_timestamp) or (due_timestamp == 0 and is_visible)
+                row[f"overdue_{key}"] = is_overdue
+
+                # Check for "In Progress" status
+                status_in_progress = False
+                if quiz_attempts and config['id'] in quiz_attempts:
+                    user_att = quiz_attempts[config['id']].get(user['id'])
+                    if user_att and user_att.get('state') == 'inprogress':
+                        status_in_progress = True
+                
+                row[f"inprogress_{key}"] = status_in_progress
+
+                # Check completion/viewed status
+                is_viewed = False
+                cmid = config.get('cmid')
+                if cmid:
+                    comp = next((c for c in completion_statuses if c.get('cmid') == cmid), None)
+                    if comp and comp.get('viewed') == 1:
+                        is_viewed = True
+                row[f"viewed_{key}"] = is_viewed
+
                 if r_ob == 0.0:
-                    row['Quizzes_Gap'] += 1
-                    m_ob = config['weight']
+                    # If we have no grade, the denominator for the risk pool should be the weight
+                    if m_ob <= 0:
+                        m_ob = config['weight']
+                    
+                    if is_overdue:
+                        row['Quizzes_Gap'] += 1
+                else:
+                    # If we HAVE a grade, but grademax is missing or 0 (prevent div by zero)
+                    if m_ob <= 0:
+                        m_ob = config['weight']
 
             # Weighted points
             pts_ob = (r_ob / m_ob * config['weight']) if m_ob > 0 else 0.0
@@ -172,7 +233,7 @@ def process_logs_and_merge(df, log_file, users_raw, window_days=180):
             time_c = next((c for c in logs.columns if 'time' in c.lower()), None)
             name_c = next((c for c in logs.columns if 'name' in c.lower()), None)
             if time_c and name_c:
-                logs[time_c] = pd.to_datetime(logs[time_c], errors='coerce')
+                logs[time_c] = pd.to_datetime(logs[time_c], errors='coerce', dayfirst=True, format='mixed')
                 logs = logs.dropna(subset=[time_c])
 
                 # Identify the reference "now" from the logs
@@ -193,8 +254,12 @@ def process_logs_and_merge(df, log_file, users_raw, window_days=180):
                 logs['Name_LC'] = logs[name_c].str.lower()
                 student_logs = logs[logs['Name_LC'].isin(student_names_lower)]
 
+                if student_logs.empty:
+                    # No matching logs for students
+                    return df, 0.0
+
                 # Compute dwell hours for only enrolled students
-                dwell_stats = student_logs.groupby(name_c).apply(lambda x: calculate_dwell_time(x, time_c)).reset_index()
+                dwell_stats = student_logs.groupby(name_c).apply(lambda x: calculate_dwell_time(x, time_c), include_groups=False).reset_index()
                 dwell_stats.columns = [name_c, 'Dwell_Hours']
 
                 # Sum total dwell hours of enrolled students only
@@ -209,7 +274,10 @@ def process_logs_and_merge(df, log_file, users_raw, window_days=180):
                 df = pd.merge(df, pd.merge(stats, dwell_stats, on=name_c), left_on='Name', right_on=name_c, how='left')
                 
         except Exception as e:
-            st.error(f"Error processing log CSV: {e}")
+            if not users_raw:
+                st.info("💡 **Please choose a Course in the sidebar** to link activity logs with students.")
+            else:
+                st.error(f"Error processing log CSV: {e}")
             
     return df, total_dwell_hours
 
@@ -232,29 +300,61 @@ def calculate_risk_scores(df, weight_config):
     if df.empty:
         return df
 
+    # Compute Dwell and Engagement components
     max_c = max(df['Clicks'].max(), 1)
     max_d = max(df['Dwell_Hours'].max(), 1)
     
-    # Normalize Engagement to 100 (50% Clicks + 50% Dwell Time)
-    df['Engagement_Score'] = (0.5 * (df['Clicks'] / max_c * 100) + 0.5 * (df['Dwell_Hours'] / max_d * 100)).round(1)
+    # 1. Activity Component (0-100)
+    df['Activity_Score'] = (0.5 * (df['Clicks'] / max_c * 100) + 0.5 * (df['Dwell_Hours'] / max_d * 100)).round(1)
     
-    # Assessment Completion (0-100)
-    denom = max(1, len(weight_config))
-    df['Assessment_Completion'] = 100 - ((df['Assignments_Gap'] + df['Quizzes_Gap']) / denom * 100)
-    df['Assessment_Completion'] = df['Assessment_Completion'].clip(0, 100)
+    # 2. Assessment Completion (0-100)
+    def calculate_completion(row):
+        total_due = 0
+        completed_due = 0
+        for key in weight_config.keys():
+            is_overdue = row.get(f"overdue_{key}", False)
+            points = row.get(f"pts_{key}", 0.0)
+            
+            if is_overdue or points > 0:
+                total_due += 1
+                if points > 0:
+                    completed_due += 1
+        
+        if total_due == 0:
+            return 100.0
+        return (completed_due / total_due) * 100.0
+
+    df['Assessment_Completion'] = df.apply(calculate_completion, axis=1)
     
-    # Performance Component (0-100)
-    df['Performance_Component'] = df['Final_Mark']
+    # Unified Engagement Score (0-100): 50% Activity + 50% Completion
+    df['Engagement_Score'] = (0.5 * df['Activity_Score'] + 0.5 * df['Assessment_Completion']).round(1)
+
+    # 3. Performance Component (0-100)
+    # We normalize marks relative to what has been released/submitted so far
+    def calculate_performance(row):
+        achieved = row.get('Final_Mark', 0.0)
+        current_weight_pool = 0.0
+        for key, cfg in weight_config.items():
+            pts = row.get(f"pts_{key}", 0.0)
+            is_overdue = row.get(f"overdue_{key}", False)
+            if pts > 0 or is_overdue:
+                current_weight_pool += cfg['weight']
+        
+        if current_weight_pool <= 0:
+            return 100.0 # Neutral/Safe if nothing is due yet
+        return min(100.0, (achieved / current_weight_pool) * 100.0)
+
+    df['Performance_Component'] = df.apply(calculate_performance, axis=1)
     
-    # Risk Score (0-100): 30% Engagement + 40% Assessment + 30% Performance
+    # Risk Score (0-100): 60% Unified Engagement + 40% Performance
     # Risk = 100 - weighted_average
-    df['Risk_Score'] = (100 - (0.3 * df['Engagement_Score'] + 0.4 * df['Assessment_Completion'] + 0.3 * df['Performance_Component'])).clip(0, 100).round(2)
+    df['Risk_Score'] = (100 - (0.6 * df['Engagement_Score'] + 0.4 * df['Performance_Component'])).clip(0, 100).round(2)
 
     def determine_risk_category(row):
-        # 1. CRITICAL: Missed 3+ Quizzes OR 2+ Assignments OR Risk Score > 75
+        # 1. CRITICAL: Missed 3+ Overdue/Not-Participated Quizzes OR 2+ Overdue Assignments OR Risk Score > 75
         if row['Quizzes_Gap'] >= 3 or row['Assignments_Gap'] >= 2 or row['Risk_Score'] > 75:
             return '🔴 Critical'
-        # 2. WARNING: Missed 2+ Quiz OR 1+ Assignment OR Risk Score > 50
+        # 2. WARNING: Missed 2+ Overdue/Not-Participated Quiz OR 1+ Overdue Assignment OR Risk Score > 50
         elif row['Quizzes_Gap'] >= 2 or row['Assignments_Gap'] >= 1 or row['Risk_Score'] > 50:
             return '🟡 Warning'
         # 3. SAFE
