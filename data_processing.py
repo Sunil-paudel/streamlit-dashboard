@@ -281,10 +281,24 @@ def process_logs_and_merge(df, log_file, users_raw, window_days=180):
             
     return df, total_dwell_hours
 
-def calculate_risk_scores(df, weight_config):
+def calculate_risk_scores(df, weight_config, formula_config=None):
     """
     Calculates composite risk scores and determines risk categories.
     """
+    # Default weights if not provided
+    if formula_config is None:
+        formula_config = {
+            'activity_weight': 0.5,
+            'completion_weight': 0.5,
+            'engagement_overall_weight': 0.6,
+            'performance_overall_weight': 0.4
+        }
+    
+    activity_w = formula_config.get('activity_weight', 0.5)
+    completion_w = formula_config.get('completion_weight', 0.5)
+    engagement_ow = formula_config.get('engagement_overall_weight', 0.6)
+    performance_ow = formula_config.get('performance_overall_weight', 0.4)
+
     # Ensure columns exist
     for col in ['Clicks', 'Dwell_Hours', 'Days_Since_Last']:
         if col not in df: df[col] = 0
@@ -326,8 +340,8 @@ def calculate_risk_scores(df, weight_config):
 
     df['Assessment_Completion'] = df.apply(calculate_completion, axis=1)
     
-    # Unified Engagement Score (0-100): 50% Activity + 50% Completion
-    df['Engagement_Score'] = (0.5 * df['Activity_Score'] + 0.5 * df['Assessment_Completion']).round(1)
+    # Unified Engagement Score (0-100): Weighted Activity + Weighted Completion
+    df['Engagement_Score'] = (activity_w * df['Activity_Score'] + completion_w * df['Assessment_Completion']).round(1)
 
     # 3. Performance Component (0-100)
     # We normalize marks relative to what has been released/submitted so far
@@ -346,9 +360,9 @@ def calculate_risk_scores(df, weight_config):
 
     df['Performance_Component'] = df.apply(calculate_performance, axis=1)
     
-    # Risk Score (0-100): 60% Unified Engagement + 40% Performance
+    # Risk Score (0-100): Weighted Engagement + Weighted Performance
     # Risk = 100 - weighted_average
-    df['Risk_Score'] = (100 - (0.6 * df['Engagement_Score'] + 0.4 * df['Performance_Component'])).clip(0, 100).round(2)
+    df['Risk_Score'] = (100 - (engagement_ow * df['Engagement_Score'] + performance_ow * df['Performance_Component'])).clip(0, 100).round(2)
 
     def determine_risk_category(row):
         # 1. CRITICAL: Missed 3+ Overdue/Not-Participated Quizzes OR 2+ Overdue Assignments OR Risk Score > 75

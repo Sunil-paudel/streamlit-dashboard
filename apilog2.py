@@ -25,7 +25,6 @@ import os
 from datetime import datetime
 
 # Import custom components
-# Import custom components
 from config import COORD_EMAIL
 from utils import send_automated_email
 from api_service import fetch_all_courses, fetch_course_metadata, is_api_ready
@@ -114,6 +113,31 @@ with st.sidebar.expander("Set Assessment Weights", expanded=True):
 
 st.sidebar.metric("Target Final Mark", f"{total_target} pts")
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔬 Risk Formula Setup")
+with st.sidebar.expander("Customize Weights", expanded=False):
+    st.info("Adjust the components that determine student risk.")
+    
+    st.write("**Engagement Mix**")
+    act_w_perc = st.slider("Activity (Clicks/Dwell)", 0, 100, 50, help="Weight of log-based activity in the Engagement Score")
+    act_w = act_w_perc / 100.0
+    comp_w = 1.0 - act_w
+    st.caption(f"Assessment Completion: {int(comp_w*100)}%")
+    
+    st.markdown("---")
+    st.write("**Overall Risk Mix**")
+    eng_ow_perc = st.slider("Engagement Weight", 0, 100, 60, help="Weight of Engagement relative to Academic Performance")
+    eng_ow = eng_ow_perc / 100.0
+    perf_ow = 1.0 - eng_ow
+    st.caption(f"Academic Performance: {int(perf_ow*100)}%")
+    
+    formula_config = {
+        'activity_weight': act_w,
+        'completion_weight': comp_w,
+        'engagement_overall_weight': eng_ow,
+        'performance_overall_weight': perf_ow
+    }
+
 
 
 # ==========================================
@@ -142,7 +166,7 @@ else:
 if df.empty:
     st.warning("No student data available for risk calculation.")
 else:
-    df = calculate_risk_scores(df, weight_config)
+    df = calculate_risk_scores(df, weight_config, formula_config=formula_config)
 
 
 # ================== 8. COURSE TEAM ==================
@@ -406,12 +430,12 @@ Details:
 # ---------- Tab 5: Methodology ----------
 with tab5:
     st.markdown("### Methodology")
-    st.write("""
-    - **Unified Engagement Score (60%)**: A composite score of activity and progress:
-        - **Activity (50% of engagement)**: Combined Clicks and Dwell Time (page activity).
-        - **Assessment Completion (50% of engagement)**: Percentage of **overdue** items submitted.
-    - **Performance Component (40%)**: Quality of marks (percentage of available points achieved).
-    - **Risk Score** = 100 - (0.6 * Unified Engagement + 0.4 * Performance)
+    st.write(f"""
+    - **Unified Engagement Score ({int(eng_ow*100)}%)**: A composite score of activity and progress:
+        - **Activity ({int(act_w*100)}% of engagement)**: Combined Clicks and Dwell Time (page activity).
+        - **Assessment Completion ({int(comp_w*100)}% of engagement)**: Percentage of **overdue** items submitted.
+    - **Performance Component ({int(perf_ow*100)}%)**: Quality of marks (percentage of available points achieved).
+    - **Risk Score** = 100 - ({eng_ow} * Unified Engagement + {round(perf_ow, 2)} * Performance)
     - **Risk Categories**:
         - 🔴 Critical: Risk Score > 75 OR 3+ missed **overdue** quizzes OR 2+ missed **overdue** assignments.
         - 🟡 Warning: Risk Score 50-75 OR 2+ missed **overdue** quizzes OR 1+ missed **overdue** assignment.
