@@ -78,3 +78,44 @@ def fetch_completion_status(course_id, user_id):
         return res.get('statuses', [])
     except:
         return []
+
+def sync_grade_to_moodle(course_id, user_id, item_id, item_type, grade_value, item_cmid=None):
+    """
+    Syncs a manually adjusted grade to Moodle.
+    
+    Args:
+        course_id: The course ID
+        user_id: The student's user ID
+        item_id: The assignment or quiz ID
+        item_type: 'assign' or 'quiz'
+        grade_value: The raw grade value (not percentage)
+        item_cmid: The course module ID (required for quizzes)
+    
+    Returns:
+        (success: bool, message: str)
+    """
+    try:
+        if item_type == 'assign':
+            # Use mod_assign_save_grade for assignments
+            result = mc.update_assignment_grade(item_id, user_id, grade_value)
+            if result and not result.get('exception'):
+                return True, f"Successfully updated assignment grade for user {user_id}"
+            else:
+                error_msg = result.get('message', 'Unknown error') if result else 'No response from Moodle'
+                return False, f"Failed to update grade: {error_msg}"
+        elif item_type == 'quiz':
+            # Use core_grades_update_grades for quiz manual override
+            # For quizzes, we need the course module ID (cmid), not the quiz ID
+            if not item_cmid:
+                return False, "Course module ID (cmid) is required for quiz grade sync"
+            
+            result = mc.update_quiz_grade(item_cmid, user_id, grade_value, course_id)
+            if result and not result.get('exception'):
+                return True, f"Successfully updated quiz grade for user {user_id}"
+            else:
+                error_msg = result.get('message', 'Unknown error') if result else 'No response from Moodle'
+                return False, f"Failed to update quiz grade: {error_msg}"
+        else:
+            return False, f"Unknown item type: {item_type}"
+    except Exception as e:
+        return False, f"Error syncing grade: {str(e)}"

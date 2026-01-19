@@ -221,12 +221,42 @@ def calculate_student_metrics(users_raw, weight_config, course_id, submission_da
         
     return student_results, teacher_results
 
-def process_logs_and_merge(df, log_file, users_raw, window_days=180):
+def get_log_date_range(log_file):
+    """
+    Quickly scans the log file to determine the min and max dates.
+    """
+    if not log_file:
+        return None, None
+    try:
+        # Read the file again to avoid messing with the main stream if needed
+        # but Streamlit file_uploader is a stream, so we should be careful.
+        # However, for CSVs we can just read the time column.
+        log_file.seek(0)
+        df_log = pd.read_csv(log_file, usecols=lambda c: 'time' in c.lower(), on_bad_lines='skip', engine='python')
+        log_file.seek(0) # Reset stream
+        
+        time_c = next((c for c in df_log.columns if 'time' in c.lower()), None)
+        if time_c:
+            times = pd.to_datetime(df_log[time_c], errors='coerce', dayfirst=True, format='mixed').dropna()
+            if not times.empty:
+                return times.min().date(), times.max().date()
+    except Exception as e:
+        st.error(f"Error reading log dates: {e}")
+    return None, None
+
+def process_logs_and_merge(df, log_file, users_raw, start_date=None, end_date=None):
     """
     Processes the uploaded Moodle log file and merges dwell time / activity stats 
-    into the main student DataFrame, restricted by a time window.
+    into the main student DataFrame, restricted by a specific date range.
     """
     total_dwell_hours = 0.0
+    # Normalize inputs to datetime64[ns] for comparison if they are datetime.date
+    if start_date:
+        start_date = pd.to_datetime(start_date)
+    if end_date:
+        # Extend to end of day
+        end_date = pd.to_datetime(end_date) + pd.Timedelta(hours=23, minutes=59, seconds=59)
+
     if log_file:
         try:
             logs = pd.read_csv(log_file, on_bad_lines='skip', engine='python', encoding='utf-8')
@@ -236,13 +266,18 @@ def process_logs_and_merge(df, log_file, users_raw, window_days=180):
                 logs[time_c] = pd.to_datetime(logs[time_c], errors='coerce', dayfirst=True, format='mixed')
                 logs = logs.dropna(subset=[time_c])
 
-                # Identify the reference "now" from the logs
+                # Identify the reference "now" from the logs (for Days_Since_Last)
                 max_log_time = logs[time_c].max()
                 
-                # Filter logs by the selected window (days)
-                if window_days:
-                    cutoff = max_log_time - pd.Timedelta(days=window_days)
-                    logs = logs[logs[time_c] >= cutoff]
+                # Filter logs by the selected absolute range
+                if start_date and end_date:
+                    logs = logs[(logs[time_c] >= start_date) & (logs[time_c] <= end_date)]
+                
+                # Calculate effective window days for weekly normalization
+                if start_date and end_date:
+                    window_days = (end_date - start_date).days + 1
+                else:
+                    window_days = 7 # fallback
 
                 # Create a set of enrolled student names (exclude staff)
                 student_names = [u['fullname'] for u in users_raw
@@ -251,7 +286,7 @@ def process_logs_and_merge(df, log_file, users_raw, window_days=180):
                 student_names_lower = [n.lower() for n in student_names]
 
                 # Normalize log names
-                logs['Name_LC'] = logs[name_c].str.lower()
+                logs['Name_LC'] = logs[name_c].str.lower().str.strip()
                 student_logs = logs[logs['Name_LC'].isin(student_names_lower)]
 
                 if student_logs.empty:
@@ -270,8 +305,16 @@ def process_logs_and_merge(df, log_file, users_raw, window_days=180):
                 stats['Days_Since_Last'] = (max_log_time - stats['Last']).dt.days
                 stats['Status'] = stats['Days_Since_Last'].apply(lambda x: "Active" if x < 14 else "Inactive")
                 
+                # Normalize clicks to per-week basis
+                if window_days and window_days > 0:
+                    stats['Clicks_Per_Week'] = (stats['Clicks'] / window_days * 7).round(2)
+                else:
+                    stats['Clicks_Per_Week'] = stats['Clicks']
+
                 # Merge dwell + stats into df
                 df = pd.merge(df, pd.merge(stats, dwell_stats, on=name_c), left_on='Name', right_on=name_c, how='left')
+            else:
+                st.warning("⚠️ Could not detect 'Time' or 'User full name' columns in the log CSV.")
                 
         except Exception as e:
             if not users_raw:
@@ -319,7 +362,7 @@ def calculate_risk_scores(df, weight_config, formula_config=None):
     max_d = max(df['Dwell_Hours'].max(), 1)
     
     # 1. Activity Component (0-100)
-    df['Activity_Score'] = (0.5 * (df['Clicks'] / max_c * 100) + 0.5 * (df['Dwell_Hours'] / max_d * 100)).round(1)
+    df['Activity_Score'] = (0.5 * (df['Clicks'] / max_c * 100) + 0.5 * (df['Dwell_Hours'] / max_d * 100)).round(2)
     
     # 2. Assessment Completion (0-100)
     def calculate_completion(row):
@@ -341,7 +384,7 @@ def calculate_risk_scores(df, weight_config, formula_config=None):
     df['Assessment_Completion'] = df.apply(calculate_completion, axis=1)
     
     # Unified Engagement Score (0-100): Weighted Activity + Weighted Completion
-    df['Engagement_Score'] = (activity_w * df['Activity_Score'] + completion_w * df['Assessment_Completion']).round(1)
+    df['Engagement_Score'] = (activity_w * df['Activity_Score'] + completion_w * df['Assessment_Completion']).round(2)
 
     # 3. Performance Component (0-100)
     # We normalize marks relative to what has been released/submitted so far

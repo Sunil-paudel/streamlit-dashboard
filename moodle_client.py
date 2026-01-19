@@ -69,6 +69,7 @@ def moodle_call(function, params=None, silent=False):
                      st.error("🔑 **Invalid Moodle Token**: Please verify your token in the settings.")
                 else:
                      st.error(f"Moodle API Exception ({function}): {json.get('message')}")
+                     st.write(f"DEBUG - Full error response: {json}")
             return {}
             
         return json
@@ -101,142 +102,35 @@ def get_user_grades(courseid, userid):
                       {"courseid": courseid, "userid": userid})
 
 @st.cache_data(ttl=60)
+def get_courses():
+    return moodle_call("core_course_get_courses")
+
+@st.cache_data(ttl=60)
+def get_enrolled_users(courseid):
+    return moodle_call("core_enrol_get_enrolled_users", {"courseid": courseid})
+
+@st.cache_data(ttl=60)
+def get_assignments(courseids):
+    params = {}
+    for i, cid in enumerate(courseids):
+        params[f"courseids[{i}]"] = cid
+    return moodle_call("mod_assign_get_assignments", params)
+
+@st.cache_data(ttl=60)
+def get_submissions(assignids):
+    params = {}
+    for i, aid in enumerate(assignids):
+        params[f"assignmentids[{i}]"] = aid
+    return moodle_call("mod_assign_get_submissions", params)
+
+@st.cache_data(ttl=60)
 def get_completion_status(courseid, userid):
     return moodle_call("core_completion_get_activities_completion_status",
                       {"courseid": courseid, "userid": userid})
 
-# ---------- new completion functions ----------
-@st.cache_data(ttl=60)
-def get_course_completion_status(courseid, userid):
-    """Returns course completion status for a user."""
-    return moodle_call("core_completion_get_course_completion_status",
-                      {"courseid": courseid, "userid": userid})
-
-# ---------- course functions ----------
-@st.cache_data(ttl=60)
-def get_course_contents(courseid):
-    """Get course contents including sections and activities."""
-    return moodle_call("core_course_get_contents",
-                      {"courseid": courseid})
-
-# ---------- enrollment functions ----------
-@st.cache_data(ttl=60)
-def get_enrolled_users(courseid):
-    """Get all enrolled users in a course."""
-    return moodle_call("core_enrol_get_enrolled_users",
-                      {"courseid": courseid})
-
-# ---------- grade functions ----------
-@st.cache_data(ttl=60)
-def update_grades(source, courseid, component, activityid, itemnumber, grades, itemdetails=None):
-    """Update a grade item and associated student grades."""
-    params = {
-        "source": source,
-        "courseid": courseid,
-        "component": component,
-        "activityid": activityid,
-        "itemnumber": itemnumber,
-    }
-    # Add grades array
-    for i, grade in enumerate(grades):
-        for key, val in grade.items():
-            params[f"grades[{i}][{key}]"] = val
-    # Add itemdetails if provided
-    if itemdetails:
-        for key, val in itemdetails.items():
-            params[f"itemdetails[{key}]"] = val
-    return moodle_call("core_grades_update_grades", params)
-
-@st.cache_data(ttl=60)
-def get_course_grades_overview(userid):
-    """Get the user's final grades for all their courses."""
-    return moodle_call("gradereport_overview_get_course_grades",
-                      {"userid": userid})
-
-@st.cache_data(ttl=60)
-def get_grade_items_for_search(courseid, searchvalue):
-    """Get grade items for a course (search widget)."""
-    return moodle_call("gradereport_singleview_get_grade_items_for_search_widget",
-                      {"courseid": courseid, "searchvalue": searchvalue})
-
-@st.cache_data(ttl=60)
-def get_grades_table(courseid, userid, groupid=0):
-    """Get the grades table for a user in a course."""
-    return moodle_call("gradereport_user_get_grades_table",
-                      {"courseid": courseid, "userid": userid, "groupid": groupid})
-
-# ---------- user profile functions ----------
-@st.cache_data(ttl=60)
-def get_course_user_profiles(userlist):
-    """Get course user profiles.
-    
-    Args:
-        userlist: List of dicts with 'userid' and 'courseid' keys
-    """
-    params = {}
-    for i, user in enumerate(userlist):
-        params[f"userlist[{i}][userid]"] = user["userid"]
-        params[f"userlist[{i}][courseid]"] = user["courseid"]
-    return moodle_call("core_user_get_course_user_profiles", params)
-
-# ---------- assignment functions ----------
-@st.cache_data(ttl=60)
-def get_assignments(courseids=None):
-    """Get assignments. If courseids not provided, returns all visible assignments."""
-    params = {}
-    if courseids:
-        for i, cid in enumerate(courseids):
-            params[f"courseids[{i}]"] = cid
-    return moodle_call("mod_assign_get_assignments", params)
-
-@st.cache_data(ttl=60)
-def get_submissions(assignmentids):
-    """Get submissions for assignments."""
-    params = {}
-    for i, aid in enumerate(assignmentids):
-        params[f"assignmentids[{i}]"] = aid
-    return moodle_call("mod_assign_get_submissions", params)
-
-# ---------- forum functions ----------
-@st.cache_data(ttl=60)
-def get_forum_discussions(forumid, sortorder=None, page=0, perpage=0):
-    """Get forum discussions with optional sorting and pagination."""
-    params = {"forumid": forumid, "page": page, "perpage": perpage}
-    if sortorder:
-        params["sortorder"] = sortorder
-    return moodle_call("mod_forum_get_forum_discussions", params)
-
-# ---------- quiz functions ----------
-
-
-@st.cache_data(ttl=60)
-def get_user_best_grade(quizid, userid):
-    """Get the best current grade for a user on a quiz."""
-    return moodle_call("mod_quiz_get_user_best_grade",
-                      {"quizid": quizid, "userid": userid})
-
-@st.cache_data(ttl=60)
-def get_user_quiz_attempts(quizid, userid, status="all", includepreviews=False):
-    """Get all attempts for a user on a quiz.
-    
-    Args:
-        status: 'all', 'finished', or 'unfinished'
-        includepreviews: Whether to include preview attempts
-    """
-    return moodle_call("mod_quiz_get_user_quiz_attempts",
-                      {"quizid": quizid, "userid": userid, 
-                       "status": status, "includepreviews": int(includepreviews)})
-
-@st.cache_data(ttl=300)
-def get_courses():
-    """Fetches all courses available to the API token."""
-    return moodle_call("core_course_get_courses")
-
 @st.cache_data(ttl=60)
 def get_quizzes_by_courses(courseid):
-    """Get quizzes for a specific course ID."""
-    # Moodle REST requires array parameters to be explicitly indexed
-    params = {"courseids[0]": courseid} 
+    params = {"courseids[0]": courseid}
     return moodle_call("mod_quiz_get_quizzes_by_courses", params)
 
 @st.cache_data(ttl=60)
@@ -245,3 +139,51 @@ def get_all_quiz_attempts(quizid, status="all"):
     # We use silent=True here because some quizzes might throw "Record not found" 
     # if they are in a strange state in Moodle (e.g. newly created or hidden)
     return moodle_call("mod_quiz_get_attempts", {"quizid": quizid, "status": status}, silent=True)
+
+def update_assignment_grade(assignment_id, user_id, grade):
+    """
+    Updates a student's grade for an assignment using mod_assign_save_grade.
+    
+    Args:
+        assignment_id: The assignment ID
+        user_id: The student's user ID
+        grade: The raw grade value (not percentage)
+    
+    Returns:
+        API response dict
+    """
+    params = {
+        'assignmentid': assignment_id,
+        'userid': user_id,
+        'grade': grade,
+        'attemptnumber': -1,  # -1 means the latest attempt
+        'addattempt': 0,
+        'workflowstate': 'released',
+        'applytoall': 0
+    }
+    return moodle_call("mod_assign_save_grade", params)
+
+def update_quiz_grade(quiz_cmid, user_id, grade, course_id):
+    """
+    Updates a student's grade for a quiz using core_grades_update_grades.
+    This creates a manual grade override in the gradebook.
+    
+    Args:
+        quiz_cmid: The quiz course module ID (not the quiz ID)
+        user_id: The student's user ID
+        grade: The raw grade value (not percentage)
+        course_id: The course ID
+    
+    Returns:
+        API response dict
+    """
+    params = {
+        'source': 'mod/quiz',
+        'courseid': course_id,
+        'component': 'mod_quiz',
+        'activityid': quiz_cmid,
+        'itemnumber': 0,
+        'grades[0][studentid]': user_id,
+        'grades[0][grade]': grade
+    }
+    return moodle_call("core_grades_update_grades", params)

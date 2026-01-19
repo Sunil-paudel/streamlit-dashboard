@@ -28,7 +28,7 @@ from datetime import datetime
 from config import COORD_EMAIL
 from utils import send_automated_email
 from api_service import fetch_all_courses, fetch_course_metadata, is_api_ready
-from data_processing import calculate_student_metrics, process_logs_and_merge, calculate_risk_scores
+from data_processing import calculate_student_metrics, process_logs_and_merge, calculate_risk_scores, get_log_date_range
 import plotly.express as px
 
 st.set_page_config(page_title="Student Risk Prevention Hub", layout="wide")
@@ -69,10 +69,40 @@ if not courses_df.empty:
 else:
     course_id = st.sidebar.number_input("Enter Course ID", value=1)
 
+# Initialize Session State for dynamic log dates
+if 'default_start' not in st.session_state:
+    st.session_state.default_start = datetime.now().replace(day=1).date()
+if 'default_end' not in st.session_state:
+    st.session_state.default_end = datetime.now().date()
+if 'prev_log_name' not in st.session_state:
+    st.session_state.prev_log_name = None
+
 log_file = st.sidebar.file_uploader("📂 Upload Moodle Activity Logs (CSV)", type=["csv"])
 
-# Log Analysis Window
-log_window_days = st.sidebar.slider("Log Analysis Window (Days)", 7, 180, 30, help="Only analyze activity from the last X days found in the log file.")
+# Detect Log File change and update date defaults
+if log_file and log_file.name != st.session_state.prev_log_name:
+    min_date, max_date = get_log_date_range(log_file)
+    if min_date and max_date:
+        st.session_state.default_start = min_date
+        st.session_state.default_end = max_date
+        st.session_state.prev_log_name = log_file.name
+        st.rerun()
+
+# Log Analysis Window (Date Picker)
+date_range = st.sidebar.date_input(
+    "Log Analysis Period", 
+    value=(st.session_state.default_start, st.session_state.default_end),
+    help="Select the start and end dates. Defaults to the range found in your uploaded log file."
+)
+
+if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+    start_date, end_date = date_range
+else:
+    start_date = date_range[0] if date_range else st.session_state.default_start
+    end_date = start_date
+
+log_window_days = (end_date - start_date).days + 1
+if log_window_days < 1: log_window_days = 1
 st.sidebar.markdown("---")
 # coord_email_input is defined later in original code, but we can init default here or keep consistent
 coord_email_input = st.sidebar.text_input("Coordinator Email", value=COORD_EMAIL)
@@ -87,6 +117,10 @@ with st.sidebar.expander("Set Assessment Weights", expanded=True):
     for q in quizzes_raw:
         w = st.slider(f"Quiz: {q['name'][:25]}", 0.0, 20.0, 5.0, key=f"q_{q['id']}")
         if w > 0:
+            # Debug: Show quiz fields
+            if 'coursemodule' not in q:
+                st.warning(f"DEBUG: Quiz '{q['name']}' is missing 'coursemodule' field. Available fields: {list(q.keys())}")
+            
             weight_config[f"quiz_{q['id']}"] = {
                 'id': int(q['id']), 
                 'cmid': q.get('coursemodule'),
@@ -111,7 +145,7 @@ with st.sidebar.expander("Set Assessment Weights", expanded=True):
             }
             total_target += w
 
-st.sidebar.metric("Target Final Mark", f"{total_target} pts")
+st.sidebar.metric("Target Final Mark", f"{total_target:.2f} pts")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔬 Risk Formula Setup")
@@ -160,7 +194,7 @@ if not users_raw:
     st.info("👋 **Welcome! Please select a Course in the sidebar to get started.**")
     total_dwell_hours = 0.0
 else:
-    df, total_dwell_hours = process_logs_and_merge(df, log_file, users_raw, window_days=log_window_days)
+    df, total_dwell_hours = process_logs_and_merge(df, log_file, users_raw, start_date=start_date, end_date=end_date)
 
 # ================== 7. RISK SCORING ==================
 if df.empty:
@@ -197,41 +231,51 @@ with tab1:
 
     m1, m2, m3, m4 = st.columns(4)
     if not df.empty:
-        m1.metric("Avg Final Mark", f"{df['Final_Mark'].mean():.2f} / {total_target}")
+        m1.metric("Avg Final Mark", f"{df['Final_Mark'].mean():.2f} / {total_target:.2f}")
         if 'Status' in df.columns:
             m2.metric("Inactive Students", len(df[df['Status']=="Inactive"]))
         else:
              m2.metric("Inactive Students", 0)
-        m3.metric("Total Dwell Hours", f"{total_dwell_hours:.2f}h")
+        m3.metric(f"Total Dwell Hours ({log_window_days}d)", f"{total_dwell_hours:.2f}h")
         if 'Risk_Score' in df.columns:
-            m4.metric("Avg Risk Score", f"{df['Risk_Score'].mean():.1f}%")
+            m4.metric("Avg Risk Score", f"{df['Risk_Score'].mean():.2f}%")
         else:
-             m4.metric("Avg Risk Score", "0.0%")
+             m4.metric("Avg Risk Score", "0.00%")
 
 # ---------- Tab 2: Risk Scatter ----------
 with tab2:
     st.markdown("### Risk Scatter: Click a dot to see student details")
     color_map = {'🔴 Critical':'red','🟡 Warning':'yellow','🟢 Safe':'green'}
     if not df.empty and 'Risk_Category' in df.columns:
+        # Prepare data for plotting
+        plot_df = df.copy()
+        # 1. Normalize Performance to % (to handle courses with different total marks)
+        target = max(total_target, 1)
+        plot_df['Performance_Perc'] = (plot_df['Final_Mark'] / target * 100).round(2)
+        
+        # 2. Ensure every dot is visible by adding a minimum size constant
+        plot_df['Plot_Size'] = plot_df['Dwell_Hours'] + 5 
+
         fig = px.scatter(
-            df,
+            plot_df,
             x='Engagement_Score',
-            y='Final_Mark',
-            size='Dwell_Hours',
+            y='Performance_Perc',
+            size='Plot_Size',
             color='Risk_Category',
             color_discrete_map=color_map,
             hover_name='Name',
             hover_data={
-                'Final_Mark': False,  # Hide raw mark since we show 'Score'
+                'Performance_Perc': False,
                 'Score': True,
                 'Assignments_Gap': True,
                 'Quizzes_Gap': True,
                 'Risk_Score': True,
-                'Engagement_Score': ':.1f'
+                'Engagement_Score': ':.2f',
+                'Plot_Size': False 
             },
             labels={
                 'Engagement_Score':'Engagement (%)',
-                'Final_Mark':'Marks Achieved',
+                'Performance_Perc':'Performance (%)',
                 'Score': 'Current Score',
                 'Assignments_Gap': 'Missed Assignments',
                 'Quizzes_Gap': 'Missed Quizzes',
@@ -239,9 +283,10 @@ with tab2:
             },
             height=600
         )
-        fig.update_yaxes(range=[0,100], title_text="Final Mark (0-100)")
-        fig.update_xaxes(title_text="Engagement Score")
-        st.plotly_chart(fig, width='stretch')
+        # Ensure axis ranges are -5 to 105 so nothing is cut off at the edges
+        fig.update_yaxes(range=[-5, 105], title_text="Performance % (Weighted Mark / Total)")
+        fig.update_xaxes(range=[-5, 105], title_text="Engagement Score (%)")
+        st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("Not enough data for scatter plot.")
 
@@ -256,12 +301,12 @@ with tab3:
                 s = subset.iloc[0]
                 st.markdown(f"### Student: {s['Name']}")
                 col1, col2, col3, col4, col5 = st.columns(5)
-                col1.metric("Final Mark", f"{s['Final_Mark']} / {total_target}")
-                col2.metric("Engagement", f"{s['Engagement_Score']}%")
-                col3.metric("Dwell Hours", f"{s['Dwell_Hours']:.2f}h")
-                col4.metric("Total Clicks", f"{int(s['Clicks'])}")
-                col5.metric("Last Active", f"{int(s['Days_Since_Last'])} days ago")
-                st.markdown(f"**Risk Score:** {s['Risk_Score']:.1f} ({s['Risk_Category']})")
+                col1.metric("Final Mark", f"{s['Final_Mark']:.2f} / {total_target:.2f}")
+                col2.metric("Engagement", f"{s['Engagement_Score']:.2f}%")
+                col3.metric("Clicks / Week", f"{s.get('Clicks_Per_Week', 0.0):.2f}")
+                col4.metric(f"Total Clicks ({log_window_days}d)", f"{int(s.get('Clicks', 0))}")
+                col5.metric(f"Dwell Hours ({log_window_days}d)", f"{s.get('Dwell_Hours', 0.0):.2f}h")
+                st.markdown(f"**Last Active:** {int(s['Days_Since_Last'])} days ago | **Risk Score:** {s['Risk_Score']:.2f} ({s['Risk_Category']})")
 
                 breakdown = []
                 for k,v in weight_config.items():
@@ -302,20 +347,85 @@ with tab4:
     st.markdown("### ✉️ Student Outreach & Email Alerts")
 
     if not df.empty and 'Risk_Score' in df.columns:
-        # Risk Score threshold slider
+        # -------- Filter Controls --------
+        st.markdown("#### 🎯 Filter Controls")
+        
         col1, col2 = st.columns([1, 1])
         with col1:
+            st.markdown("**Risk-Based Filtering**")
             t_val = st.slider("Risk Score Threshold:", 0, 100, 50)
-        with col2:
             cat_filter = st.multiselect("Include Categories:", ['🔴 Critical', '🟡 Warning', '🟢 Safe'], default=['🔴 Critical', '🟡 Warning'])
         
-        # Filter: Score >= Threshold OR Category in Selected
-        preview_targets = df[
-            (df['Risk_Score'] >= t_val) | 
-            (df['Risk_Category'].isin(cat_filter))
-        ][['Name', 'Email', 'Risk_Score', 'Risk_Category', 'Assignments_Gap', 'Quizzes_Gap', 'Clicks', 'Days_Since_Last', 'Status']].copy()
+        with col2:
+            st.markdown("**Assessment-Based Filtering**")
+            # Build list of assessment names
+            item_options = [f"{cfg['name']}" for key, cfg in weight_config.items()]
+            selected_items = st.multiselect(
+                "Filter by Specific Items:",
+                options=item_options,
+                help="Select specific quizzes or assignments to target students who scored below the threshold."
+            )
+            score_threshold = st.slider(
+                "Score Threshold (%):",
+                min_value=0,
+                max_value=100,
+                value=40,
+                step=10,
+                help="Students scoring below this % in ANY selected item will be included."
+            )
+        
+        # Logic toggle
+        narrow_by_risk = st.checkbox(
+            "Narrow by Activity/Risk? (AND logic)",
+            value=False,
+            help="If checked, students must match BOTH risk filters AND item filters. If unchecked, students matching EITHER will be included."
+        )
+        
+        # -------- Apply Filters --------
+        # Risk-based mask
+        risk_mask = (df['Risk_Score'] >= t_val) | (df['Risk_Category'].isin(cat_filter))
+        
+        # Item-based mask
+        item_mask = pd.Series([False] * len(df), index=df.index)
+        if selected_items:
+            for idx, row in df.iterrows():
+                for key, cfg in weight_config.items():
+                    if cfg['name'] in selected_items:
+                        # Check if student scored below threshold
+                        raw = row.get(f"raw_{key}", 0)
+                        max_pts = row.get(f"max_{key}", cfg['weight']) or cfg['weight']
+                        perc = (raw / max_pts * 100) if max_pts > 0 else 0
+                        if perc < score_threshold:
+                            item_mask[idx] = True
+                            break
+        
+        # Combine masks based on logic
+        if selected_items and narrow_by_risk:
+            # AND logic: must match both
+            final_mask = risk_mask & item_mask
+            filter_desc = f"Score ≥ {t_val} OR Categories: {', '.join(cat_filter)} **AND** Scoring < {score_threshold:.0f}% in: {', '.join(selected_items)}"
+        elif selected_items:
+            # OR logic: match either
+            final_mask = risk_mask | item_mask
+            filter_desc = f"Score ≥ {t_val} OR Categories: {', '.join(cat_filter)} **OR** Scoring < {score_threshold:.0f}% in: {', '.join(selected_items)}"
+        else:
+            # Only risk-based
+            final_mask = risk_mask
+            filter_desc = f"Score ≥ {t_val} OR Categories: {', '.join(cat_filter)}"
+        
+        # Build the base columns
+        base_cols = ['Name', 'Email', 'Risk_Score', 'Risk_Category', 'Assignments_Gap', 'Quizzes_Gap', 'Clicks', 'Days_Since_Last', 'Status']
+        preview_targets = df[final_mask][base_cols].copy()
+        
+        # Add individual assessment scores as percentage columns
+        for key, cfg in weight_config.items():
+            col_name = f"{cfg['name']} (%)"
+            preview_targets[col_name] = df[final_mask].apply(
+                lambda row: round((row.get(f"raw_{key}", 0) / (row.get(f"max_{key}", cfg['weight']) or cfg['weight']) * 100) if (row.get(f"max_{key}", cfg['weight']) or cfg['weight']) > 0 else 0, 2),
+                axis=1
+            )
 
-        st.markdown(f"### Target List (Score ≥ {t_val} OR Categories: {', '.join(cat_filter)})")
+        st.markdown(f"### Target List ({filter_desc})")
         if not preview_targets.empty:
             # Add selection column
             preview_targets.insert(0, "Select", True)
@@ -444,18 +554,23 @@ with tab5:
 
 # ---------- Tab 6: Detailed Results ----------
 with tab6:
-    st.markdown("### Student Detailed Performance (Percentage Marks)")
+    st.markdown("### Student Detailed Performance (Editable)")
+    st.info("💡 **Edit assessment scores below and click 'Push to Moodle' to sync changes.**")
 
     if df.empty:
         st.info("No data.")
     else:
+        # Initialize session state for tracking changes
+        if 'grade_changes' not in st.session_state:
+            st.session_state.grade_changes = {}
+        
         detailed_list = []
         for _, u in df.iterrows():
             row = {
                 "User_ID": u['User_ID'],
                 "Name": u['Name'],
                 "Email": u['Email'],
-                "Score": f"{u['Final_Mark']} / {total_target}",
+                "Score": f"{u['Final_Mark']:.2f} / {total_target:.2f}",
                 "Clicks": int(u.get('Clicks', 0)),
                 "Dwell_Hours": round(u.get('Dwell_Hours', 0), 2),
                 "Days_Since_Last": int(u.get('Days_Since_Last', 0)),
@@ -468,23 +583,134 @@ with tab6:
                 # Use the 'max' column computed during metrics calculation
                 m = u.get(f"max_{k}", cfg['weight']) or cfg['weight']
                 perc = (r / m * 100) if m > 0 else 0
-                row[f"{cfg['name']} (%)"] = round(perc, 1)
+                row[f"{cfg['name']} (%)"] = round(perc, 2)
+            
+            # Add adjustment reason column
+            row["Adjustment Reason"] = ""
 
             detailed_list.append(row)
 
         detailed_df = pd.DataFrame(detailed_list)
+        
+        # Make assessment columns editable
+        editable_cols = [col for col in detailed_df.columns if col.endswith(" (%)")]
+        disabled_cols = [col for col in detailed_df.columns if col not in editable_cols and col != "Adjustment Reason"]
 
-        # Display the table
-        # st.dataframe(detailed_df, width="stretch")
-        st.dataframe(detailed_df, use_container_width=True)
+        # Display editable table
+        edited_df = st.data_editor(
+            detailed_df,
+            disabled=disabled_cols,
+            hide_index=True,
+            use_container_width=True,
+            key="detailed_results_editor"
+        )
 
+        # Detect changes
+        changes_detected = []
+        for idx, (orig_row, edit_row) in enumerate(zip(detailed_df.iterrows(), edited_df.iterrows())):
+            orig_data = orig_row[1]
+            edit_data = edit_row[1]
+            
+            for col in editable_cols:
+                if abs(orig_data[col] - edit_data[col]) > 0.01:  # Tolerance for floating point
+                    # Extract assessment key from column name
+                    assessment_name = col.replace(" (%)", "")
+                    # Find the corresponding key in weight_config
+                    item_key = None
+                    for k, cfg in weight_config.items():
+                        if cfg['name'] == assessment_name:
+                            item_key = k
+                            break
+                    
+                    if item_key:
+                        item_cmid = weight_config[item_key].get('cmid')
+                        # Debug: Show what we're capturing
+                        if weight_config[item_key]['type'] == 'quiz':
+                            st.write(f"DEBUG: Quiz {weight_config[item_key]['name']} - ID: {weight_config[item_key]['id']}, CMID: {item_cmid}")
+                        
+                        changes_detected.append({
+                            'user_id': edit_data['User_ID'],
+                            'name': edit_data['Name'],
+                            'item_key': item_key,
+                            'item_name': assessment_name,
+                            'item_type': weight_config[item_key]['type'],
+                            'item_id': weight_config[item_key]['id'],
+                            'item_cmid': item_cmid,
+                            'old_perc': orig_data[col],
+                            'new_perc': edit_data[col],
+                            'max_points': weight_config[item_key]['weight'],
+                            'reason': edit_data.get('Adjustment Reason', '')
+                        })
+
+        # Review Pending Changes
+        if changes_detected:
+            with st.expander(f"📋 Review Pending Changes ({len(changes_detected)} modifications)", expanded=True):
+                for change in changes_detected:
+                    st.markdown(f"""
+                    **{change['name']}** - {change['item_name']}:
+                    - Old: {change['old_perc']:.2f}% → New: {change['new_perc']:.2f}%
+                    - Reason: {change['reason'] if change['reason'] else '_No reason provided_'}
+                    """)
+            
+            # Push to Moodle button
+            st.markdown("---")
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.warning("⚠️ **Warning**: This will update grades in your Moodle Gradebook. Make sure you have reviewed all changes above.")
+            with col2:
+                if st.button("🔄 Push to Moodle", type="primary"):
+                    from api_service import sync_grade_to_moodle
+                    
+                    success_count = 0
+                    fail_count = 0
+                    
+                    with st.spinner("Syncing grades to Moodle..."):
+                        for change in changes_detected:
+                            st.write(f"---\n**Processing: {change['name']} - {change['item_name']}**")
+                            
+                            # Convert percentage back to raw score
+                            new_raw = (change['new_perc'] / 100) * change['max_points']
+                            st.write(f"📊 Percentage: {change['new_perc']:.2f}% → Raw score: {new_raw:.2f}/{change['max_points']}")
+                            
+                            # Log the sync parameters
+                            st.write(f"🔧 Sync params:")
+                            st.write(f"  - Item type: {change['item_type']}")
+                            st.write(f"  - Item ID: {change['item_id']}")
+                            st.write(f"  - Item CMID: {change.get('item_cmid', 'NOT SET')}")
+                            st.write(f"  - User ID: {change['user_id']}")
+                            st.write(f"  - Course ID: {course_id}")
+                            
+                            # Sync both assignments and quizzes
+                            success, message = sync_grade_to_moodle(
+                                course_id=course_id,
+                                user_id=change['user_id'],
+                                item_id=change['item_id'],
+                                item_type=change['item_type'],
+                                grade_value=new_raw,
+                                item_cmid=change.get('item_cmid')
+                            )
+                            
+                            if success:
+                                st.success(f"✅ {change['name']} - {change['item_name']}: {message}")
+                                success_count += 1
+                            else:
+                                st.error(f"❌ {change['name']} - {change['item_name']}: {message}")
+                                fail_count += 1
+                    
+                    st.info(f"Sync complete: {success_count} successful, {fail_count} failed/skipped")
+                    
+                    # Clear cache to refresh data
+                    if success_count > 0:
+                        st.cache_data.clear()
+                        st.info("💡 Refresh the page to see updated grades from Moodle.")
 
         # CSV download
-        csv = detailed_df.to_csv(index=False).encode('utf-8')
+        st.markdown("---")
+        csv = edited_df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="📥 Download Detailed Results CSV",
+            label="📥 Download Detailed Results CSV (with adjustments)",
             data=csv,
-            file_name="student_detailed_results_percentage.csv",
+            file_name="student_detailed_results_edited.csv",
             mime="text/csv"
         )
 
