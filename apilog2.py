@@ -666,19 +666,8 @@ with tab6:
                     
                     with st.spinner("Syncing grades to Moodle..."):
                         for change in changes_detected:
-                            st.write(f"---\n**Processing: {change['name']} - {change['item_name']}**")
-                            
                             # Convert percentage back to raw score
                             new_raw = (change['new_perc'] / 100) * change['max_points']
-                            st.write(f"📊 Percentage: {change['new_perc']:.2f}% → Raw score: {new_raw:.2f}/{change['max_points']}")
-                            
-                            # Log the sync parameters
-                            st.write(f"🔧 Sync params:")
-                            st.write(f"  - Item type: {change['item_type']}")
-                            st.write(f"  - Item ID: {change['item_id']}")
-                            st.write(f"  - Item CMID: {change.get('item_cmid', 'NOT SET')}")
-                            st.write(f"  - User ID: {change['user_id']}")
-                            st.write(f"  - Course ID: {course_id}")
                             
                             # Sync both assignments and quizzes
                             success, message = sync_grade_to_moodle(
