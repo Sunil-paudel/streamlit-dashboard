@@ -223,7 +223,7 @@ with tab1:
     if not df.empty and 'Risk_Category' in df.columns:
         early_warn_df = df[df['Risk_Category'].isin(['🔴 Critical','🟡 Warning'])][['Name', 'Score', 'Assignments_Gap','Quizzes_Gap','Risk_Category']]
         if not early_warn_df.empty:
-            st.dataframe(early_warn_df, width="stretch")
+            st.dataframe(early_warn_df, use_container_width=True)
         else:
             st.success("All students are on track! ✅")
     else:
@@ -442,7 +442,7 @@ with tab4:
                 },
                 disabled=["Name", "Email", "Risk_Score", "Assignments_Gap", "Quizzes_Gap", "Clicks", "Days_Since_Last", "Status"],
                 hide_index=True,
-                width="stretch"
+                use_container_width=True
             )
             
             # Filter for selected students
