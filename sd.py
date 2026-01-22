@@ -5,6 +5,12 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+import plotly.express as px
+
+# Import core modules
+from api_service import fetch_all_courses, fetch_course_metadata, fetch_user_grades_batch
+from data_processing import calculate_student_metrics
 
 # -------------------- Load Environment Variables --------------------
 load_dotenv()
@@ -39,101 +45,81 @@ def moodle_api_call(function_name: str, params=None):
         return []
 
 # -------------------- Fetch Functions --------------------
-def get_courses():
-    return moodle_api_call("core_course_get_courses") or []
-
 @st.cache_data(ttl=60)
 def get_course_groupings_with_groups(course_id: int):
     """Get all groupings in course first"""
     resp = moodle_api_call("core_group_get_course_groupings", {"courseid": course_id})
     
     if isinstance(resp, dict) and "groupings" in resp:
-        groupings = resp["groupings"]
-    elif isinstance(resp, list):
+        return resp.get("groupings", [])
+    
+    if isinstance(resp, list):
         groupings = resp
     else:
         groupings = []
     
-    valid_groupings = [g for g in groupings if isinstance(g, dict) and "id" in g and "name" in g]
-    
-    # Now get detailed groupings with groups using the groupingids
-    if valid_groupings:
-        grouping_ids = [g["id"] for g in valid_groupings]
-        params = {"returngroups": 1}
-        for i, gid in enumerate(grouping_ids):
-            params[f"groupingids[{i}]"] = gid
-        
-        detailed = moodle_api_call("core_group_get_groupings", params)
-        if isinstance(detailed, list):
-            return detailed
-    
-    return valid_groupings
+    if not groupings:
+        return []
 
-def get_course_groups(course_id: int):
-    resp = moodle_api_call("core_group_get_course_groups", {"courseid": course_id})
-    if isinstance(resp, dict) and "groups" in resp:
-        groups = resp["groups"]
-    elif isinstance(resp, list):
-        groups = resp
-    else:
-        groups = []
-    return [g for g in groups if isinstance(g, dict) and "id" in g and "name" in g]
+    grouping_ids = [g.get("id") for g in groupings]
+    params = {"returngroups": 1}
+    for i, gid in enumerate(grouping_ids):
+        params[f"groupingids[{i}]"] = gid
+        
+    detailed_resp = moodle_api_call("core_group_get_groupings", params)
+    if isinstance(detailed_resp, list):
+        return detailed_resp
+    return groupings
 
 @st.cache_data(ttl=60)
-def get_group_members(group_id: int):
-    """Get members of a specific group"""
-    resp = moodle_api_call("core_group_get_group_members", {"groupid": group_id})
-    
-    if isinstance(resp, dict) and "exception" in resp:
-        return []
-    if isinstance(resp, dict) and "members" in resp:
-        return resp["members"]
-    elif isinstance(resp, list):
-        return resp
-    return []
-
-def get_enrolled_students(course_id: int):
-    resp = moodle_api_call("core_enrol_get_enrolled_users", {"courseid": course_id})
+def get_course_groups(course_id: int):
+    """Get all groups in course"""
+    resp = moodle_api_call("core_group_get_course_groups", {"courseid": course_id})
     if isinstance(resp, list):
         return resp
     return []
 
-def get_assignments(course_id: int):
-    data = moodle_api_call("mod_assign_get_assignments", {"courseids[0]": course_id})
-    courses = data.get("courses", []) if isinstance(data, dict) else []
-    if not courses:
-        return []
-    return courses[0].get("assignments", [])
+def get_all_groups_with_grouping_id(groupings: list):
+    """Extract all groups from groupings response and flatten list"""
+    all_groups_with_grouping = []
+    
+    for grouping in groupings:
+        grouping_id = grouping.get("id")
+        groups_in_grouping = grouping.get("groups", [])
+        
+        for group in groups_in_grouping:
+            group_copy = group.copy()
+            group_copy["groupingid"] = grouping_id
+            all_groups_with_grouping.append(group_copy)
+    
+    return all_groups_with_grouping
 
-def get_assignment_submissions(course_id: int, assignment_id: int):
-    submissions_data = moodle_api_call("mod_assign_get_submissions", {"assignmentids[0]": assignment_id})
-    assignments = submissions_data.get("assignments", []) if isinstance(submissions_data, dict) else []
-    if not assignments:
-        return []
-    return assignments[0].get("submissions", [])
+@st.cache_data(ttl=60)
+def get_group_members(group_id: int):
+    """Get members of a specific group - returns list of user IDs"""
+    params = {"groupids[0]": group_id}
+    resp = moodle_api_call("core_group_get_groups_members", params)
+    
+    def parse_members_response(response):
+        if isinstance(response, dict) and "exception" in response:
+            return None
+        if isinstance(response, list):
+            if response and isinstance(response[0], dict) and "userids" in response[0]:
+                return response[0].get("userids", [])
+            return response
+        return None
 
-def merge_students_with_grades(students: list, assignment: dict):
-    submission_data = get_assignment_submissions(assignment.get("course", 0), assignment.get("id", 0)) or []
-    result = []
-    due_date_ts = assignment.get("duedate", 0)
-
-    for student in students:
-        sub = next((s for s in submission_data if s.get("userid") == student.get("id")), None)
-        grade = sub.get("grade") if sub else None
-        status = sub.get("status") if sub else "missing"
-
-        # Past-due missing = 0
-        if (grade is None or grade == "") and due_date_ts > 0 and datetime.now().timestamp() > due_date_ts:
-            grade = 0
-            status = "missing_due"
-
-        result.append({
-            "id": student.get("id"),
-            "name": student.get("fullname"),
-            "grade": float(grade) if grade not in [None, ""] else None,
-            "status": status
-        })
-    return result
+    members = parse_members_response(resp)
+    if members is not None:
+        return members
+        
+    resp_fallback = moodle_api_call("core_group_get_group_members", params)
+    members_fallback = parse_members_response(resp_fallback)
+    
+    if members_fallback is not None:
+        return members_fallback
+        
+    return []
 
 # -------------------- Streamlit App --------------------
 st.set_page_config(page_title="Moodle Dashboard", layout="wide")
@@ -143,301 +129,368 @@ st.title("📊 Moodle Student Performance Dashboard")
 st.sidebar.header("Filters")
 
 # Courses
-courses = get_courses()
-if not courses:
-    st.warning("No courses found.")
-    st.stop()
+courses_df = fetch_all_courses()
 
-course_options = {c.get("fullname", f"Course {c.get('id')}"): c.get("id") for c in courses}
-course_name = st.sidebar.selectbox("Select Course", list(course_options.keys()))
-course_id = course_options.get(course_name)
-
-# Groupings / Classes - Get with detailed groups
-groupings = get_course_groupings_with_groups(course_id)
-grouping_options = {g.get("name", f"Grouping {g.get('id')}"): g.get("id") for g in groupings} if groupings else {"All Classes": None}
-grouping_name = st.sidebar.selectbox("Select Class (Grouping)", list(grouping_options.keys()))
-grouping_id = grouping_options.get(grouping_name)
-
-# Groups - Get all groups in course
-all_groups = get_course_groups(course_id)
-
-# Filter groups by selected grouping
-if grouping_id:
-    # Get groups from the grouping
-    selected_grouping = next((g for g in groupings if g.get("id") == grouping_id), None)
-    if selected_grouping and "groups" in selected_grouping:
-        filtered_groups = selected_grouping["groups"]
+if not courses_df.empty:
+    # Check if 'id' and 'fullname' exist
+    if 'id' in courses_df.columns and 'fullname' in courses_df.columns:
+        # Filter out course ID 1 (Site/Front Page/Guest course)
+        courses_df = courses_df[courses_df['id'] != 1]
+        
+        courses_df['display'] = courses_df['id'].astype(str) + " - " + courses_df['fullname']
+        course_options = courses_df['display'].tolist()
+        
+        if course_options:
+            choice = st.sidebar.selectbox("Select Course", options=course_options)
+            course_id = int(choice.split(" - ")[0])
+        else:
+            st.sidebar.warning("No courses found (excluding Site Home).")
+            course_id = st.sidebar.number_input("Enter Course ID", value=2)
     else:
-        filtered_groups = [g for g in all_groups if g.get("groupingid") == grouping_id]
+        st.sidebar.error("Could not parse course list. Check API permissions.")
+        course_id = st.sidebar.number_input("Enter Course ID", value=2)
 else:
-    filtered_groups = all_groups
+    course_id = st.sidebar.number_input("Enter Course ID", value=2)
 
-group_options = {g.get("name", f"Group {g.get('id')}"): g.get("id") for g in filtered_groups} if filtered_groups else {}
-group_name = st.sidebar.selectbox("Select Group (Optional)", ["All"] + list(group_options.keys()))
-group_id = group_options.get(group_name)
+# --- Fetch metadata ---
+with st.spinner("Fetching course data..."):
+    users_raw, quizzes_raw, assigns_raw, submission_data, quiz_attempts_raw = fetch_course_metadata(course_id)
 
-# Assignments
-assignments = get_assignments(course_id)
-assignment_options = {a.get("name", f"Assignment {a.get('id')}"): a for a in assignments} if assignments else {}
+# Filter for students only (exclude guests with id=0 and teachers)
+students = [
+    u for u in users_raw 
+    if u.get("id") != 0  # Exclude guest user (id=0)
+    and u.get("username") not in ["guest", ""]  # Exclude guest username
+    and not any(r.get('shortname') in ['teacher', 'editingteacher', 'manager'] for r in u.get('roles', []))
+]
 
-# Make assignment filter optional
-selected_assignment = None
-if assignment_options:
-    assignment_name = st.sidebar.selectbox("Select Assignment (Optional)", ["All Assignments"] + list(assignment_options.keys()))
-    if assignment_name != "All Assignments":
-        selected_assignment = assignment_options.get(assignment_name)
-else:
-    st.sidebar.info("No assignments found in this course.")
+# Also exclude guest course (course=0)
+assignments = [a for a in assigns_raw if a.get("course") != 0 and a.get("course") is not None]
 
-# Grade slider
-min_grade = st.sidebar.slider("Show students below grade:", 0, 100, 50)
-
-# -------------------- Fetch Students --------------------
-students = get_enrolled_students(course_id) or []
 if not students:
     st.warning("No students enrolled in this course.")
     st.stop()
 
+# Groupings / Classes - Get with detailed groups
+groupings = get_course_groupings_with_groups(course_id)
+
+# Checkbox to enable filtering
+use_filters = st.sidebar.checkbox("Filter by Class/Group", value=False)
+
+grouping_id = None
+group_id = None
+selected_grouping = None
+filtered_groups = []
+group_name = "All"
+
+if use_filters:
+    grouping_options = {"All Classes": None}
+    if groupings:
+        grouping_options.update({g.get("name", f"Grouping {g.get('id')}"): g.get("id") for g in groupings})
+    
+    grouping_name = st.sidebar.selectbox("Select Class (Grouping)", list(grouping_options.keys()))
+    grouping_id = grouping_options.get(grouping_name)
+    
+    all_groups = get_course_groups(course_id)
+    all_groups_with_grouping = get_all_groups_with_grouping_id(groupings)
+    
+    if grouping_id:
+        selected_grouping = next((g for g in groupings if g.get("id") == grouping_id), None)
+        if selected_grouping and "groups" in selected_grouping:
+            filtered_groups = selected_grouping["groups"]
+        else:
+            filtered_groups = [g for g in all_groups_with_grouping if g.get("groupingid") == grouping_id]
+    else:
+        filtered_groups = all_groups_with_grouping
+    
+    group_options = {g.get("name", f"Group {g.get('id')}"): g.get("id") for g in filtered_groups} if filtered_groups else {}
+    group_name = st.sidebar.selectbox("Select Group (Optional)", ["All"] + list(group_options.keys()))
+    group_id = group_options.get(group_name)
+else:
+    all_groups = get_course_groups(course_id)
+    all_groups_with_grouping = get_all_groups_with_grouping_id(groupings)
+
+# Assignments
+assignment_options = {a.get("name", f"Assignment {a.get('id')}"): a for a in assignments} if assignments else {}
+
+selected_assignment = None
+use_assignment_filter = st.sidebar.checkbox("Filter by Single Assignment", value=False)
+min_grade = None
+
+if use_assignment_filter:
+    if assignment_options:
+        assignment_name = st.sidebar.selectbox("Select Assignment", list(assignment_options.keys()))
+        selected_assignment = assignment_options.get(assignment_name)
+        min_grade = st.sidebar.slider("Show students below grade:", 0, 100, 50)
+    else:
+        st.sidebar.info("No assignments found in this course.")
+
 # -------------------- Build Student-to-Grouping Mapping --------------------
 student_to_grouping = {}
 
-# Use grouping data with groups
+# Initialize all students with "No Class" / "No Group"
+for student in students:
+    student_id = student.get("id")
+    student_to_grouping[student_id] = {
+        "grouping_id": None,
+        "grouping_name": "No Class",
+        "group_name": "No Group",
+        "group_id": None
+    }
+
+# Override with actual grouping/group data
 for grouping in groupings:
-    grouping_id_val = grouping.get("id")
-    grouping_name_val = grouping.get("name")
+    grouping_id_map = grouping.get("id")
+    grouping_name_map = grouping.get("name")
     groups_in_grouping = grouping.get("groups", [])
     
     for group in groups_in_grouping:
-        group_id_val = group.get("id")
-        group_name_val = group.get("name")
+        group_id_map = group.get("id")
+        group_name_map = group.get("name")
+        member_ids = get_group_members(group_id_map)
         
-        # Get members of this group
-        members = get_group_members(group_id_val)
-        for member in members:
-            student_id = member.get("id")
-            student_to_grouping[student_id] = {
-                "grouping_id": grouping_id_val,
-                "grouping_name": grouping_name_val,
-                "group_name": group_name_val
+        for member_id in member_ids:
+            student_to_grouping[member_id] = {
+                "grouping_id": grouping_id_map,
+                "grouping_name": grouping_name_map,
+                "group_name": group_name_map,
+                "group_id": group_id_map
             }
 
 # -------------------- Filter by Class / Group --------------------
-# Filter by grouping/class
-if grouping_id:
-    grouping_students = [sid for sid, info in student_to_grouping.items() if info.get("grouping_id") == grouping_id]
-    students = [s for s in students if s.get("id") in grouping_students]
+filtered_students_raw = list(students)
 
-# Filter by group
-if group_name != "All" and group_id:
-    group_students = [sid for sid, info in student_to_grouping.items() if info.get("grouping_id") == grouping_id and 
-                     (next((g for g in filtered_groups if g.get("id") == group_id), {}).get("id") == group_id)]
-    students = [s for s in students if s.get("id") in group_students]
+if use_filters:
+    if grouping_id:
+        grouping_students = [sid for sid, info in student_to_grouping.items() if info.get("grouping_id") == grouping_id]
+        filtered_students_raw = [s for s in filtered_students_raw if s.get("id") in grouping_students]
+    
+    if group_name != "All" and group_id:
+        group_students = [sid for sid, info in student_to_grouping.items() if info.get("group_id") == group_id]
+        filtered_students_raw = [s for s in filtered_students_raw if s.get("id") in group_students]
 
-# -------------------- Merge Grades --------------------
-if selected_assignment:
-    # Single assignment selected
-    submission_data = get_assignment_submissions(selected_assignment.get("course", 0), selected_assignment.get("id", 0)) or []
-    student_grades = []
-    due_date_ts = selected_assignment.get("duedate", 0)
-    
-    for student in students:
-        sub = next((s for s in submission_data if s.get("userid") == student.get("id")), None)
-        grade = sub.get("grade") if sub else None
-        status = sub.get("status") if sub else "missing"
-        
-        # Show 0 if no grade and past due date, otherwise show "-"
-        if grade is None or grade == "":
-            if due_date_ts > 0 and datetime.now().timestamp() > due_date_ts:
-                grade = 0
-                status = "missing_due"
-            else:
-                grade = None  # Will display as "-" in dataframe
-        else:
-            grade = float(grade)
-        
-        student_grades.append({
-            "id": student.get("id"),
-            "name": student.get("fullname"),
-            "grade": grade,
-            "status": status
-        })
-    
-    df = pd.DataFrame(student_grades)
-    assignment_title = selected_assignment.get("name", "Unknown Assignment")
+# -------------------- CALCULATE GRADES --------------------
+weight_config = {}
+for assign in assignments:
+    key = f"assign_{assign['id']}"
+    weight_config[key] = {
+        'id': assign['id'],
+        'name': assign['name'],
+        'type': 'assign',
+        'weight': 100.0,
+        'duedate': assign.get('duedate', 0)
+    }
+
+with st.spinner("Calculating metrics..."):
+    student_results, _ = calculate_student_metrics(
+        filtered_students_raw, 
+        weight_config, 
+        course_id, 
+        submission_data, 
+        quiz_attempts_raw
+    )
+
+if student_results:
+    df = pd.DataFrame(student_results)
 else:
-    # All assignments - get grades for each student in each assignment
-    student_grades = []
-    
-    for student in students:
-        student_data = {
-            "id": student.get("id"),
-            "name": student.get("fullname"),
-            "grades": {},
-            "total_grade": None,
-            "avg_grade": None
-        }
-        
-        all_grades = []
-        
-        for assignment in assignments:
-            submission_data = get_assignment_submissions(assignment.get("course", 0), assignment.get("id", 0)) or []
-            sub = next((s for s in submission_data if s.get("userid") == student.get("id")), None)
-            grade = sub.get("grade") if sub else None
-            due_date_ts = assignment.get("duedate", 0)
-            
-            # Show 0 if no grade and past due date, otherwise show "-"
-            if grade is None or grade == "":
-                if due_date_ts > 0 and datetime.now().timestamp() > due_date_ts:
-                    grade = 0
-                else:
-                    grade = None  # Will be shown as "-"
-            else:
-                grade = float(grade)
-            
-            assignment_name = assignment.get("name", f"Assignment {assignment.get('id')}")
-            student_data["grades"][assignment_name] = grade
-            
-            # Only include in average if grade exists and is not 0 from past-due
-            if grade not in [None, ""] and not (grade == 0 and due_date_ts > 0 and datetime.now().timestamp() > due_date_ts):
-                all_grades.append(grade)
-            elif grade not in [None, ""]:
-                all_grades.append(grade)
-        
-        # Calculate average
-        if all_grades:
-            student_data["avg_grade"] = sum(all_grades) / len(all_grades)
-        
-        student_grades.append(student_data)
-    
-    # Create DataFrame
-    if student_grades:
-        df = pd.DataFrame([
-            {
-                "id": sg["id"],
-                "name": sg["name"],
-                **sg["grades"],
-                "avg_grade": sg["avg_grade"]
-            }
-            for sg in student_grades
-        ])
-    else:
-        df = pd.DataFrame()
-    
-    assignment_title = f"All Assignments ({len(assignments)} total)"
+    df = pd.DataFrame()
 
-# Handle empty DataFrame gracefully
+assignment_title = f"All Assignments ({len(assignments)} assignments)"
+
+# -------------------- Display Logic --------------------
 if df.empty:
-    st.warning("No student grades to display yet.")
-    st.stop()
-
-# Add grouping information
-df["grouping_id"] = df["id"].map(lambda x: student_to_grouping.get(x, {}).get("grouping_id"))
-df["grouping_name"] = df["id"].map(lambda x: student_to_grouping.get(x, {}).get("grouping_name"))
-df["group_name"] = df["id"].map(lambda x: student_to_grouping.get(x, {}).get("group_name"))
-
-# Format None values as "-"
-def format_grade(val):
-    if val is None or pd.isna(val):
-        return "-"
-    return val
-
-# For single assignment, add status
-if selected_assignment:
-    df["status"] = "submitted"
-    df_display = df.copy()
-    # Format grade column
-    df_display["grade"] = df_display["grade"].apply(format_grade)
-    
-    df_filtered = df[df["grade"].notna() & (df["grade"] < min_grade)]
-    
-    st.subheader(f"Students below grade {min_grade}")
-    st.dataframe(df_filtered[["name", "grade", "status", "group_name", "grouping_name"]] if not df_filtered.empty else pd.DataFrame(columns=["name", "grade", "status", "group_name", "grouping_name"]))
-    
-    st.subheader(f"All Students - {assignment_title}")
-    st.dataframe(df_display[["name", "grade", "status", "group_name", "grouping_name"]], use_container_width=True, hide_index=True)
+    with st.container(border=True):
+        st.markdown("### ∅ No Data Found")
+        st.markdown("No students matched your selected filters.")
+        st.caption(f"Diagnostics: Total Enrolled: {len(students)} | Filtered List: {len(filtered_students_raw)}")
+        if len(students) > 0 and len(filtered_students_raw) == 0:
+            st.error("All students were filtered out! Check if 'Filter by Class/Group' is enabled with an empty class.")
 else:
-    # For all assignments, show average grade filter
-    df_display = df.copy()
+    # Add grouping information to DF
+    df["id"] = df["User_ID"]
+    df["grouping_id"] = df["id"].map(lambda x: student_to_grouping.get(x, {}).get("grouping_id"))
+    df["grouping_name"] = df["id"].map(lambda x: student_to_grouping.get(x, {}).get("grouping_name"))
+    df["group_id"] = df["id"].map(lambda x: student_to_grouping.get(x, {}).get("group_id"))
+    df["group_name"] = df["id"].map(lambda x: student_to_grouping.get(x, {}).get("group_name"))
     
-    # Format assignment columns
-    for col in df.columns:
-        if col not in ["id", "name", "avg_grade", "grouping_id", "grouping_name", "group_name"]:
-            df_display[col] = df_display[col].apply(format_grade)
+    df["grouping_name"] = df["grouping_name"].fillna("No Class")
+    df["group_name"] = df["group_name"].fillna("No Group")
     
-    if "avg_grade" in df.columns:
-        df_filtered = df[df["avg_grade"].notna() & (df["avg_grade"] < min_grade)]
+    rename_map = {}
+    display_cols = ['Name', 'Email', 'Final_Mark', 'grouping_name', 'group_name']
+    
+    for key, cfg in weight_config.items():
+        raw_col = f"raw_{key}" 
+        if raw_col in df.columns:
+            new_name = cfg['name']
+            rename_map[raw_col] = new_name
+            display_cols.append(new_name)
+    
+    df_display = df.copy().rename(columns=rename_map)
+    existing_cols = [c for c in display_cols if c in df_display.columns]
+    
+    if selected_assignment:
+        assign_name = selected_assignment.get("name")
+        if min_grade is not None and assign_name in df_display.columns:
+            df_display[assign_name] = pd.to_numeric(df_display[assign_name], errors='coerce')
+            df_display = df_display[df_display[assign_name].notna() & (df_display[assign_name] < min_grade)]
+            st.subheader(f"Students below grade {min_grade} in '{assign_name}'")
+        else:
+            st.subheader(f"All Students - {assignment_title} (Filtered View: '{assign_name}')")
+    else:
+        st.subheader(f"All Students - {assignment_title}")
+
+    st.dataframe(df_display[existing_cols], use_container_width=True, hide_index=True)
+
+    # -------------------- Grouped Bar Chart --------------------
+    st.divider()
+    st.subheader("📊 Grade Distribution by Class and Assignment")
+    
+    if selected_assignment:
+        assign_name = selected_assignment.get("name")
+        if assign_name in df_display.columns:
+            df_chart = df_display.copy()
+            df_chart[assign_name] = pd.to_numeric(df_chart[assign_name], errors='coerce')
+            
+            # Group by class and calculate mean
+            chart_data = df_chart.groupby("grouping_name")[assign_name].mean().reset_index()
+            chart_data.columns = ["Class", "Average Grade"]
+            
+            # Create bar chart
+            fig = px.bar(chart_data, x="Class", y="Average Grade", 
+                        title=f"Average Grade per Class - {assign_name}",
+                        color="Class", barmode="group",
+                        labels={"Average Grade": "Grade"})
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info(f"No data available for '{assign_name}'")
+    else:
+        # Create grouped bar chart for all assignments
+        if not df_display.empty:
+            # Prepare data for grouped bar chart
+            chart_data_list = []
+            
+            for assign_key, assign_cfg in weight_config.items():
+                assign_name = assign_cfg['name']
+                if assign_name in df_display.columns:
+                    # Group by class
+                    grouped = df_display.groupby("grouping_name")[assign_name].apply(
+                        lambda x: pd.to_numeric(x, errors='coerce').mean()
+                    ).reset_index()
+                    grouped.columns = ["Class", "Average Grade"]
+                    grouped["Assignment"] = assign_name
+                    chart_data_list.append(grouped)
+            
+            if chart_data_list:
+                chart_data = pd.concat(chart_data_list, ignore_index=True)
+                
+                # Create grouped bar chart
+                fig = px.bar(chart_data, x="Assignment", y="Average Grade", 
+                            color="Class", barmode="group",
+                            title="Average Grades by Assignment and Class",
+                            labels={"Average Grade": "Grade"},
+                            color_discrete_sequence=px.colors.qualitative.Plotly)
+                
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No grade data available for chart")
+        else:
+            st.info("No data available")
+    
+    # -------------------- Performance Stats by Grouping --------------------
+    st.divider()
+    st.subheader("📊 Performance by Grouping")
+    
+    if selected_assignment:
+        assign_name = selected_assignment.get("name")
+        if assign_name in df_display.columns:
+            df_grades = df_display.copy()
+            df_grades[assign_name] = pd.to_numeric(df_grades[assign_name], errors='coerce')
+            df_grades = df_grades[df_grades[assign_name].notna()]
+            
+            if not df_grades.empty:
+                grouping_stats = df_grades.groupby("grouping_name").agg({
+                    assign_name: ["mean", "median", "min", "max", "count"],
+                }).round(2)
+                grouping_stats.columns = ["Avg Grade", "Median Grade", "Min Grade", "Max Grade", "Submissions"]
+                st.dataframe(grouping_stats, use_container_width=True)
+            else:
+                st.info("No stats available")
+    else:
+        if "Final_Mark" in df.columns:
+            df_avg = df[df["Final_Mark"].notna()]
+            if not df_avg.empty:
+                grouping_stats = df_avg.groupby("grouping_name").agg({
+                    "Final_Mark": ["mean", "median", "min", "max"],
+                    "id": "count"
+                }).round(2)
+                grouping_stats.columns = ["Avg Mark", "Median Mark", "Min Mark", "Max Mark", "Total Students"]
+                st.dataframe(grouping_stats, use_container_width=True)
+            else:
+                st.info("No stats available")
+    
+    # -------------------- Top/Bottom performers --------------------
+    st.divider()
+    st.subheader("🏆 Top/Bottom Performers")
+    
+    metric_col = "Final_Mark"
+    if selected_assignment:
+        assign_name = selected_assignment.get("name")
+        if assign_name in df_display.columns:
+            metric_col = assign_name
+    
+    if metric_col in df_display.columns:
+        df_perf = df_display.copy()
+        df_perf[metric_col] = pd.to_numeric(df_perf[metric_col], errors='coerce')
+        df_perf = df_perf[df_perf[metric_col].notna()].sort_values(metric_col, ascending=False)
         
-        st.subheader(f"Students with average grade below {min_grade}")
-        if not df_filtered.empty:
-            st.dataframe(df_filtered)
-    
-    st.subheader(f"All Students - {assignment_title}")
-    st.dataframe(df_display, use_container_width=True, hide_index=True)
-
-# -------------------- Class Comparison --------------------
-if selected_assignment:
-    avg_per_class = df.groupby("grouping_name")["grade"].mean().sort_values(ascending=False)
-    st.subheader(f"Average Grade per Class for '{assignment_title}'")
-else:
-    avg_per_class = df.groupby("grouping_name")["avg_grade"].mean().sort_values(ascending=False)
-    st.subheader(f"Average Grade per Class - {assignment_title}")
-
-st.bar_chart(avg_per_class if not avg_per_class.empty else pd.Series([0], index=["No Class"]))
-
-# -------------------- Performance Stats by Grouping --------------------
-st.subheader("📊 Performance by Grouping")
-
-if selected_assignment:
-    grouping_stats = df.groupby("grouping_name").agg({
-        "grade": ["mean", "median", "min", "max", "count"],
-        "id": "count"
-    }).round(2)
-    grouping_stats.columns = ["Avg Grade", "Median Grade", "Min Grade", "Max Grade", "Submissions", "Total Students"]
-else:
-    grouping_stats = df.groupby("grouping_name").agg({
-        "avg_grade": ["mean", "median", "min", "max"],
-        "id": "count"
-    }).round(2)
-    grouping_stats.columns = ["Avg Grade", "Median Grade", "Min Grade", "Max Grade", "Total Students"]
-
-st.dataframe(grouping_stats, use_container_width=True)
-
-# -------------------- Top/Bottom performers --------------------
-if selected_assignment:
-    st.subheader("Top 5 Students")
-    st.dataframe(df.sort_values(by="grade", ascending=False).head(5))
-
-    st.subheader("Bottom 5 Students")
-    st.dataframe(df.sort_values(by="grade", ascending=True).head(5))
-else:
-    st.subheader("Top 5 Students (by Average Grade)")
-    st.dataframe(df.sort_values(by="avg_grade", ascending=False).head(5))
-
-    st.subheader("Bottom 5 Students (by Average Grade)")
-    st.dataframe(df.sort_values(by="avg_grade", ascending=True).head(5))
-
-# -------------------- Debug Info --------------------
-with st.expander("🔍 Debug Info"):
-    st.subheader("Raw API Responses")
-    
-    groupings_raw = moodle_api_call("core_group_get_course_groupings", {"courseid": course_id})
-    st.write("**Groupings Response:**")
-    st.json(groupings_raw)
-    
-    if groupings:
-        grouping_ids = [g.get("id") for g in groupings]
-        params = {"returngroups": 1}
-        for i, gid in enumerate(grouping_ids):
-            params[f"groupingids[{i}]"] = gid
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Top 5 Students")
+            st.dataframe(df_perf[["Name", metric_col, "group_name", "grouping_name"]].head(5), use_container_width=True, hide_index=True)
         
-        detailed_groupings = moodle_api_call("core_group_get_groupings", params)
-        st.write("**Detailed Groupings with Groups:**")
-        st.json(detailed_groupings)
+        with col2:
+            st.subheader("Bottom 5 Students")
+            st.dataframe(df_perf[["Name", metric_col, "group_name", "grouping_name"]].tail(5), use_container_width=True, hide_index=True)
+
+
+# -------------------- Debug Info (Hidden by Default) --------------------
+if st.sidebar.checkbox("Show Debug Logs", value=False):
+    st.divider()
     
-    groups_raw = moodle_api_call("core_group_get_course_groups", {"courseid": course_id})
-    st.write("**Groups Response:**")
-    st.json(groups_raw)
+    st.subheader("📊 Data Source Summary")
     
-    st.subheader("Student-to-Grouping Mapping (sample)")
-    sample_mapping = {str(k): v for k, v in list(student_to_grouping.items())[:10]}
-    st.json(sample_mapping)
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Enrolled Students", len(students), "Excluding guests")
+    
+    with col2:
+        st.metric("Students in Groupings", len(student_to_grouping), "With/without groups")
+    
+    with col3:
+        df_count = len(df) if not df.empty else 0
+        st.metric("Students in DataFrame", df_count, "After filtering")
+    
+    with col4:
+        st.metric("Total Assignments", len(assignments), "Excluding guest course")
+    
+    st.divider()
+    st.subheader("📋 Data Details")
+    st.write(f"**Total Users (Raw):** {len(users_raw)}")
+    st.write(f"**Students (Filtered - No guests, no teachers):** {len(students)}")
+    st.write(f"**Total Assignments (Raw):** {len(assigns_raw)}")
+    st.write(f"**Assignments (Filtered - No guest course):** {len(assignments)}")
+    st.write(f"**Student-to-Grouping Mappings:** {len(student_to_grouping)}")
+    
+    # Show filtered out users
+    st.write("**Filtered Out Users:**")
+    guest_users = [u for u in users_raw if u.get("id") == 0 or u.get("username") == "guest"]
+    teacher_users = [u for u in users_raw if any(r.get('shortname') in ['teacher', 'editingteacher', 'manager'] for r in u.get('roles', []))]
+    st.write(f"  - Guest users: {len(guest_users)}")
+    st.write(f"  - Teachers/Managers: {len(teacher_users)}")
+    
+    # Show filtered out assignments
+    st.write("**Filtered Out Assignments:**")
+    guest_assignments = [a for a in assigns_raw if a.get("course") == 1 or a.get("course") is None]
+    st.write(f"  - Guest course (course_id=1) assignments: {len(guest_assignments)}")
