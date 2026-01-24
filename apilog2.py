@@ -30,6 +30,7 @@ from utils import send_automated_email
 from api_service import fetch_all_courses, fetch_course_metadata, is_api_ready
 from data_processing import calculate_student_metrics, process_logs_and_merge, calculate_risk_scores, get_log_date_range
 import plotly.express as px
+from components.class_analytics import render_class_analytics
 
 st.set_page_config(page_title="Student Risk Prevention Hub", layout="wide")
 
@@ -212,9 +213,9 @@ if teacher_results:
         with t_cols[idx%5]: st.info(f"**{t['Name']}**\n\n{t.get('Email','N/A')}")
 
 # ================== 9. MAIN TABS ==================
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📊 Overview", "📉 Risk Scatter", "📋 Student Details",
-    "✉️ Outreach", "📚 Methodology", "📑 Detailed Results"
+    "📊 Class Analysis", "✉️ Outreach", "📚 Methodology", "📑 Detailed Results"
 ])
 
 # ---------- Tab 1: Overview ----------
@@ -342,8 +343,12 @@ with tab3:
          st.info("No data available.")
 
 
-# ---------- Tab 4: Outreach ----------
+# ---------- Tab 4: Class Analysis ----------
 with tab4:
+    render_class_analytics(course_id, users_raw, quizzes_raw, assigns_raw, submission_data, quiz_attempts_raw)
+
+# ---------- Tab 5: Outreach ----------
+with tab5:
     st.markdown("### ✉️ Student Outreach & Email Alerts")
 
     if not df.empty and 'Risk_Score' in df.columns:
@@ -537,8 +542,8 @@ Details:
         st.info("No student data available for outreach.")
 
 
-# ---------- Tab 5: Methodology ----------
-with tab5:
+# ---------- Tab 6: Methodology ----------
+with tab6:
     st.markdown("### Methodology")
     st.write(f"""
     - **Unified Engagement Score ({int(eng_ow*100)}%)**: A composite score of activity and progress:
@@ -552,8 +557,8 @@ with tab5:
         - 🟢 Safe: Risk Score < 50.
     """)
 
-# ---------- Tab 6: Detailed Results ----------
-with tab6:
+# ---------- Tab 7: Detailed Results ----------
+with tab7:
     st.markdown("### Student Detailed Performance (Editable)")
     st.info("💡 **Edit assessment scores below and click 'Push to Moodle' to sync changes.**")
 

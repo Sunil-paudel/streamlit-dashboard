@@ -140,6 +140,54 @@ def get_all_quiz_attempts(quizid, status="all"):
     # if they are in a strange state in Moodle (e.g. newly created or hidden)
     return moodle_call("mod_quiz_get_attempts", {"quizid": quizid, "status": status}, silent=True)
 
+@st.cache_data(ttl=60)
+def get_course_groupings(courseid):
+    res = moodle_call("core_group_get_course_groupings", {"courseid": courseid})
+    if isinstance(res, dict) and 'groupings' in res:
+        return res['groupings']
+    return res if isinstance(res, list) else []
+
+@st.cache_data(ttl=60)
+def get_groupings_detailed(groupingids):
+    params = {"returngroups": 1}
+    for i, gid in enumerate(groupingids):
+        params[f"groupingids[{i}]"] = gid
+    res = moodle_call("core_group_get_groupings", params)
+    # The response can be a list or a dict containing a list
+    if isinstance(res, list):
+        return res
+    if isinstance(res, dict) and 'groupings' in res:
+        return res['groupings']
+    return []
+
+@st.cache_data(ttl=60)
+def get_course_groups(courseid):
+    res = moodle_call("core_group_get_course_groups", {"courseid": courseid})
+    if isinstance(res, dict) and 'groups' in res:
+        return res['groups']
+    return res if isinstance(res, list) else []
+
+@st.cache_data(ttl=60)
+def get_groups_members(groupids):
+    """Get members for multiple groups. Returns standardized list of dicts."""
+    if not groupids: return []
+    params = {}
+    for i, gid in enumerate(groupids):
+        params[f"groupids[{i}]"] = gid
+    res = moodle_call("core_group_get_groups_members", params, silent=True)
+    
+    # Fallback to singular method if batch fails or returns exception
+    if not res or (isinstance(res, dict) and res.get('exception')):
+        results = []
+        for gid in groupids:
+            s_res = moodle_call("core_group_get_group_members", {"groupid": gid}, silent=True)
+            if isinstance(s_res, list):
+                results.append({'groupid': gid, 'userids': s_res})
+            elif isinstance(s_res, dict) and 'userids' in s_res:
+                results.append({'groupid': gid, 'userids': s_res['userids']})
+        return results
+    return res if isinstance(res, list) else []
+
 def update_assignment_grade(assignment_id, user_id, grade):
     """
     Updates a student's grade for an assignment using mod_assign_save_grade.
