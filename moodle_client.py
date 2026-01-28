@@ -44,10 +44,9 @@ def check_connection():
     return True, "Configuration present."
 
 # ---------- low-level caller ----------
-def moodle_call(function, params=None, silent=False):
+def moodle_call(function, params=None, silent=False, method="GET"):
     is_ok, msg = check_connection()
     if not is_ok:
-        # We don't want to spam errors if we know it's not configured
         return {}
 
     try:
@@ -57,22 +56,26 @@ def moodle_call(function, params=None, silent=False):
             "moodlewsrestformat": "json",
             **(params or {})
         }
-        r = requests.get(ENDPOINT, params=payload, timeout=10)
+        if method.upper() == "POST":
+            r = requests.post(ENDPOINT, data=payload, timeout=15)
+        else:
+            r = requests.get(ENDPOINT, params=payload, timeout=10)
+        
         r.raise_for_status()
-        json = r.json()
+        json_res = r.json()
         
         # Handle Moodle-specific exceptions returned in JSON
-        if isinstance(json, dict) and json.get("exception"):
+        if isinstance(json_res, dict) and json_res.get("exception"):
             if not silent:
                 # Check for invalid token specifically
-                if json.get("errorcode") == "invalidtoken":
+                if json_res.get("errorcode") == "invalidtoken":
                      st.error("Invalid Moodle Token: Please verify your token in the settings.")
                 else:
-                     st.error(f"Moodle API Exception ({function}): {json.get('message')}")
-                     st.write(f"DEBUG - Full error response: {json}")
-            return {}
+                     st.error(f"Moodle API Exception ({function}): {json_res.get('message')}")
+                     st.write(f"DEBUG - Full error response: {json_res}")
+            return json_res
             
-        return json
+        return json_res
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404:
             st.error(f"Moodle URL Not Found: The URL `{MOODLE_URL}` seems incorrect (404).")
@@ -209,7 +212,7 @@ def update_assignment_grade(assignment_id, user_id, grade):
         'workflowstate': 'released',
         'applytoall': 0
     }
-    return moodle_call("mod_assign_save_grade", params)
+    return moodle_call("mod_assign_save_grade", params, method="POST")
 
 def update_quiz_grade(quiz_cmid, user_id, grade, course_id):
     """

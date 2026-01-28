@@ -110,10 +110,11 @@ def sync_grade_to_moodle(course_id, user_id, item_id, item_type, grade_value, it
                 return False, "Course module ID (cmid) is required for quiz grade sync"
             
             result = mc.update_quiz_grade(item_cmid, user_id, grade_value, course_id)
-            if result and not result.get('exception'):
+            # core_grades_update_grades might return None on success
+            if result is None or (isinstance(result, dict) and not result.get('exception')):
                 return True, f"Successfully updated quiz grade for user {user_id}"
             else:
-                error_msg = result.get('message', 'Unknown error') if result else 'No response from Moodle'
+                error_msg = result.get('message', 'Unknown error') if isinstance(result, dict) else 'No response from Moodle'
                 return False, f"Failed to update quiz grade: {error_msg}"
         else:
             return False, f"Unknown item type: {item_type}"
