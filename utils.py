@@ -33,7 +33,7 @@ def calculate_dwell_time(group, time_col):
     view_mask = group['Event name'].str.contains('viewed', case=False, na=False)
     return round(durations[view_mask].clip(upper=30).sum() / 60, 2)
 
-def send_automated_email(to_email, subject, body):
+def send_automated_email(to_email, subject, body, is_html=False):
     """
     Sends an automated email using SMTP.
     """
@@ -42,7 +42,7 @@ def send_automated_email(to_email, subject, body):
         msg["Subject"] = subject
         msg["From"] = SMTP_USER
         msg["To"] = to_email
-        msg.attach(MIMEText(body, "plain"))
+        msg.attach(MIMEText(body, "html" if is_html else "plain"))
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=ssl.create_default_context()) as server:
             server.login(SMTP_USER, SMTP_PASS)
             server.sendmail(SMTP_USER, to_email, msg.as_string())
