@@ -38,6 +38,8 @@ def render_detailed_results(df, total_target, weight_config, course_id):
                 m = u.get(f"max_{k}", cfg['weight']) or cfg['weight']
                 perc = (r / m * 100) if m > 0 else 0
                 row[f"{cfg['name']} (%)"] = round(perc, 2)
+                # Store the actual Moodle max points for this item in the row for later sync use
+                row[f"max_val_{k}"] = m
             
             # Add adjustment reason column
             row["Adjustment Reason"] = ""
@@ -89,7 +91,7 @@ def render_detailed_results(df, total_target, weight_config, course_id):
                             'item_cmid': item_cmid,
                             'old_perc': orig_data[col],
                             'new_perc': edit_data[col],
-                            'max_points': weight_config[item_key]['weight'],
+                            'max_points': edit_data.get(f"max_val_{item_key}", weight_config[item_key]['weight']),
                             'reason': edit_data.get('Adjustment Reason', '')
                         })
 

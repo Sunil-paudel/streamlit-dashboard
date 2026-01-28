@@ -7,7 +7,8 @@ from data_processing import calculate_student_metrics
 def get_course_groupings_with_groups_local(course_id: int):
     """Mirror of sd.py logic for fetching groupings"""
     # Use direct moodle_call from mc to ensure same parameters as sd.py
-    resp = mc.moodle_call("core_group_get_course_groupings", {"courseid": course_id})
+    import moodle_client
+    resp = moodle_client.moodle_call("core_group_get_course_groupings", {"courseid": course_id})
     
     if isinstance(resp, dict) and "groupings" in resp:
         groupings = resp.get("groupings", [])

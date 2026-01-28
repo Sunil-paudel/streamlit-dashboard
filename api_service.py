@@ -98,10 +98,11 @@ def sync_grade_to_moodle(course_id, user_id, item_id, item_type, grade_value, it
         if item_type == 'assign':
             # Use mod_assign_save_grade for assignments
             result = mc.update_assignment_grade(item_id, user_id, grade_value)
-            if result and not result.get('exception'):
+            # mod_assign_save_grade might return {} or None on success
+            if result is None or (isinstance(result, dict) and not result.get('exception')):
                 return True, f"Successfully updated assignment grade for user {user_id}"
             else:
-                error_msg = result.get('message', 'Unknown error') if result else 'No response from Moodle'
+                error_msg = result.get('message', 'Unknown error') if isinstance(result, dict) else 'No response from Moodle'
                 return False, f"Failed to update grade: {error_msg}"
         elif item_type == 'quiz':
             # Use core_grades_update_grades for quiz manual override
