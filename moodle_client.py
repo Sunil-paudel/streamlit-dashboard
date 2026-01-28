@@ -66,7 +66,7 @@ def moodle_call(function, params=None, silent=False):
             if not silent:
                 # Check for invalid token specifically
                 if json.get("errorcode") == "invalidtoken":
-                     st.error("🔑 **Invalid Moodle Token**: Please verify your token in the settings.")
+                     st.error("Invalid Moodle Token: Please verify your token in the settings.")
                 else:
                      st.error(f"Moodle API Exception ({function}): {json.get('message')}")
                      st.write(f"DEBUG - Full error response: {json}")
@@ -75,12 +75,12 @@ def moodle_call(function, params=None, silent=False):
         return json
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404:
-            st.error(f"🌐 **Moodle URL Not Found**: The URL `{MOODLE_URL}` seems incorrect (404).")
+            st.error(f"Moodle URL Not Found: The URL `{MOODLE_URL}` seems incorrect (404).")
         else:
             st.error(f"HTTP Error: {e}")
         return {}
     except requests.exceptions.RequestException as e:
-        st.error(f"📡 **Connection Error**: Unable to reach Moodle at `{MOODLE_URL}`. Please check your internet or URL.")
+        st.error(f"Connection Error: Unable to reach Moodle at `{MOODLE_URL}`. Please check your internet or URL.")
         return {}
     except Exception as e:
         st.error(f"Unexpected Error: {e}")

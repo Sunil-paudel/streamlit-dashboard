@@ -14,7 +14,7 @@ def render_student_details(df, total_target, weight_config, log_window_days):
                 s = subset.iloc[0]
                 st.markdown(f"### Student: {s['Name']}")
                 col1, col2, col3, col4, col5 = st.columns(5)
-                col1.metric("Final Mark", f"{s['Final_Mark']:.2f} / {total_target:.2f}")
+                col1.metric("Final Mark", f"{int(s['Final_Mark'])} / {int(total_target)}")
                 col2.metric("Engagement", f"{s['Engagement_Score']:.2f}%")
                 col3.metric("Clicks / Week", f"{s.get('Clicks_Per_Week', 0.0):.2f}")
                 col4.metric(f"Total Clicks ({log_window_days}d)", f"{int(s.get('Clicks', 0))}")
@@ -29,13 +29,14 @@ def render_student_details(df, total_target, weight_config, log_window_days):
                     is_viewed = s.get(f"viewed_{k}", False)
                     
                     if pts > 0:
-                        status_icon = "✅"
+                        status_icon = "Complete"
                     elif is_overdue:
-                        status_icon = "⚠️"
+                        status_icon = "Overdue"
                     elif is_inprogress or is_viewed:
-                        status_icon = "🔄"
+                        status_icon = "Active"
                     else:
-                        status_icon = "⏳"
+                        status_icon = "Pending"
+
 
                     breakdown.append({
                         "Assessment": v['name'],

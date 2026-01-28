@@ -216,7 +216,7 @@ def calculate_student_metrics(users_raw, weight_config, course_id, submission_da
             row['Final_Mark'] += pts_ob
 
         row['Final_Mark'] = round(row['Final_Mark'], 2)
-        row['Early_Warning'] = "⚠️" if (row['Assignments_Gap'] > 0 or row['Quizzes_Gap'] >= 2) else "✅"
+        row['Early_Warning'] = "Flagged" if (row['Assignments_Gap'] > 0 or row['Quizzes_Gap'] >= 2) else "Normal"
         student_results.append(row)
         
     return student_results, teacher_results
@@ -314,11 +314,11 @@ def process_logs_and_merge(df, log_file, users_raw, start_date=None, end_date=No
                 # Merge dwell + stats into df
                 df = pd.merge(df, pd.merge(stats, dwell_stats, on=name_c), left_on='Name', right_on=name_c, how='left')
             else:
-                st.warning("⚠️ Could not detect 'Time' or 'User full name' columns in the log CSV.")
+                st.warning("Could not detect 'Time' or 'User full name' columns in the log CSV.")
                 
         except Exception as e:
             if not users_raw:
-                st.info("💡 **Please choose a Course in the sidebar** to link activity logs with students.")
+                st.info("Please choose a Course in the sidebar to link activity logs with students.")
             else:
                 st.error(f"Error processing log CSV: {e}")
             
@@ -410,13 +410,13 @@ def calculate_risk_scores(df, weight_config, formula_config=None):
     def determine_risk_category(row):
         # 1. CRITICAL: Missed 3+ Overdue/Not-Participated Quizzes OR 2+ Overdue Assignments OR Risk Score > 75
         if row['Quizzes_Gap'] >= 3 or row['Assignments_Gap'] >= 2 or row['Risk_Score'] > 75:
-            return '🔴 Critical'
+            return 'Critical'
         # 2. WARNING: Missed 2+ Overdue/Not-Participated Quiz OR 1+ Overdue Assignment OR Risk Score > 50
         elif row['Quizzes_Gap'] >= 2 or row['Assignments_Gap'] >= 1 or row['Risk_Score'] > 50:
-            return '🟡 Warning'
+            return 'Warning'
         # 3. SAFE
         else:
-            return '🟢 Safe'
+            return 'Safe'
 
     df['Risk_Category'] = df.apply(determine_risk_category, axis=1)
     return df

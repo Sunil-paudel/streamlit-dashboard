@@ -1,7 +1,7 @@
 # ========================================================================================
 # File: apilog2.py
 # Description: Main Entry Point for the Moodle Student Dropout Prevention Dashboard.
-# Author: Sunny (Refactored by Antigravity)
+# Author: Sunny
 # Last Modified: 2026-01-15
 #
 # Purpose:
@@ -33,22 +33,18 @@ import plotly.express as px
 from components.class_analytics import render_class_analytics
 from components.outreach import render_outreach
 
-st.set_page_config(page_title="Student Risk Prevention Hub", layout="wide")
+st.set_page_config(page_title="Student Risk Analytics Dashboard", layout="wide")
 
 # ================== 3. API STATUS CHECK ==================
 api_ok, api_msg = is_api_ready()
 if not api_ok:
-    st.sidebar.error(f"🚫 **Moodle Connection Issue**\n\n{api_msg}")
-    st.info("👋 **Welcome! Please check your Moodle configuration in the .env file.**")
+    st.sidebar.error(f"Moodle Connection Issue\n\n{api_msg}")
+    st.info("System Configuration Required. Please check Moodle settings in the .env file.")
     st.stop()
 else:
-    # Add a Refresh Button to clear cache
-    if st.sidebar.button("🔄 Refresh Course Data"):
-        st.cache_data.clear()
-        st.rerun()
-
+    st.sidebar.success("Moodle Connection Established")
 # ================== 4. SIDEBAR COURSE & WEIGHT CONFIG ==================
-st.sidebar.header("🎓 Course Setup")
+st.sidebar.header("Course Setup")
 courses_df = fetch_all_courses()
 if not courses_df.empty:
     # Check if 'id' and 'fullname' exist (sometimes API returns errors as list of dicts)
@@ -78,8 +74,10 @@ if 'default_end' not in st.session_state:
     st.session_state.default_end = datetime.now().date()
 if 'prev_log_name' not in st.session_state:
     st.session_state.prev_log_name = None
+if 'nav_choice' not in st.session_state:
+    st.session_state.nav_choice = "Overview"
 
-log_file = st.sidebar.file_uploader("📂 Upload Moodle Activity Logs (CSV)", type=["csv"])
+log_file = st.sidebar.file_uploader("Upload Moodle Activity Logs (CSV)", type=["csv"])
 
 # Detect Log File change and update date defaults
 if log_file and log_file.name != st.session_state.prev_log_name:
@@ -109,7 +107,7 @@ st.sidebar.markdown("---")
 # coord_email_input is defined later in original code, but we can init default here or keep consistent
 coord_email_input = st.sidebar.text_input("Coordinator Email", value=COORD_EMAIL)
 st.sidebar.markdown("---")
-st.sidebar.subheader("⚖️ Assessment Weight Setup")
+st.sidebar.subheader("Assessment Weight Setup")
 
 users_raw, quizzes_raw, assigns_raw, submission_data, quiz_attempts_raw = fetch_course_metadata(course_id)
 weight_config = {}
@@ -145,9 +143,7 @@ with st.sidebar.expander("Set Assessment Weights", expanded=True):
             total_target += w
 
 st.sidebar.metric("Target Final Mark", f"{total_target:.2f} pts")
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔬 Risk Formula Setup")
+st.sidebar.subheader("Risk Formula Setup")
 with st.sidebar.expander("Customize Weights", expanded=False):
     st.info("Adjust the components that determine student risk.")
     
@@ -171,12 +167,40 @@ with st.sidebar.expander("Customize Weights", expanded=False):
         'performance_overall_weight': perf_ow
     }
 
+st.sidebar.markdown("---")
+with st.sidebar.expander("Methodology & Logic", expanded=False):
+    st.write(f"""
+    - **Engagement Mix ({int(eng_ow*100)}%)**:
+        - **Activity ({int(act_w*100)}%)**: Combined Clicks and Dwell Time.
+        - **Assessments ({int(comp_w*100)}%)**: Overdue items submitted.
+    - **Performance ({int(perf_ow*100)}%)**: Quality of marks ACHIEVED.
+    - **Risk Score** = 100 - ({eng_ow} * Engagement + {round(perf_ow, 2)} * Performance)
+    - **Thresholds**:
+        - Critical: Risk > 75 or 3+ missed quizzes
+        - Warning: Risk 50-75 or 2+ missed quizzes
+    """)
+
 
 
 # ==========================================
 # 5. CALCULATION ENGINE
 # ==========================================
-st.title("🎯 Moodle Analytics Hub")
+st.title("Student Risk Analytics Dashboard")
+
+# --- Top Navigation Bar ---
+nav_options = [
+    "Overview", "Risk Scatter", "Student Details",
+    "Class Analysis", "Outreach", "Detailed Results"
+]
+# Use st.radio with horizontal=True for a horizontal navbar
+st.session_state.nav_choice = st.radio(
+    "Navigation",
+    options=nav_options,
+    index=nav_options.index(st.session_state.get('nav_choice', "Overview")) if st.session_state.get('nav_choice') in nav_options else 0,
+    horizontal=True,
+    label_visibility="collapsed"
+)
+st.divider()
 
 # Calculate metrics using data_processing module
 student_results, teacher_results = calculate_student_metrics(users_raw, weight_config, course_id, submission_data, quiz_attempts_raw)
@@ -190,7 +214,7 @@ else:
 
 # ================== 6. LOG INTEGRATION ==================
 if not users_raw:
-    st.info("👋 **Welcome! Please select a Course in the sidebar to get started.**")
+    st.info("System Ready. Please select a Course in the sidebar to get started.")
     total_dwell_hours = 0.0
 else:
     df, total_dwell_hours = process_logs_and_merge(df, log_file, users_raw, start_date=start_date, end_date=end_date)
@@ -203,34 +227,31 @@ else:
 
 
 # ================== 8. COURSE TEAM ==================
-st.markdown("### 🧑‍🏫 Course Team")
+st.markdown("### Course Team")
 # teacher_results is already filtered in calculate_student_metrics
 if teacher_results:
     t_cols = st.columns(min(len(teacher_results),5))
     for idx, t in enumerate(teacher_results):
         with t_cols[idx%5]: st.info(f"**{t['Name']}**\n\n{t.get('Email','N/A')}")
 
-# ================== 9. MAIN TABS ==================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "📊 Overview", "📉 Risk Scatter", "📋 Student Details",
-    "📊 Class Analysis", "✉️ Outreach", "📚 Methodology", "📑 Detailed Results"
-])
+# ================== 9. MAIN CONTENT (Conditional Rendering) ==================
+choice = st.session_state.nav_choice
 
-# ---------- Tab 1: Overview ----------
-with tab1:
-    st.markdown("### 🛑 Early Prevention Alerts")
+# ---------- View: Overview ----------
+if choice == "Overview":
+    st.markdown("### Early Prevention Alerts")
     if not df.empty and 'Risk_Category' in df.columns:
-        early_warn_df = df[df['Risk_Category'].isin(['🔴 Critical','🟡 Warning'])][['Name', 'Score', 'Assignments_Gap','Quizzes_Gap','Risk_Category']]
+        early_warn_df = df[df['Risk_Category'].isin(['Critical','Warning'])][['Name', 'Score', 'Assignments_Gap','Quizzes_Gap','Risk_Category']]
         if not early_warn_df.empty:
             st.dataframe(early_warn_df, use_container_width=True)
         else:
-            st.success("All students are on track! ✅")
+            st.success("All students are on track.")
     else:
         st.info("No data available.")
 
     m1, m2, m3, m4 = st.columns(4)
     if not df.empty:
-        m1.metric("Avg Final Mark", f"{df['Final_Mark'].mean():.2f} / {total_target:.2f}")
+        m1.metric("Avg Final Mark", f"{int(df['Final_Mark'].mean())} / {int(total_target)}")
         if 'Status' in df.columns:
             m2.metric("Inactive Students", len(df[df['Status']=="Inactive"]))
         else:
@@ -241,10 +262,11 @@ with tab1:
         else:
              m4.metric("Avg Risk Score", "0.00%")
 
-# ---------- Tab 2: Risk Scatter ----------
-with tab2:
+# ---------- View: Risk Scatter ----------
+elif choice == "Risk Scatter":
+
     st.markdown("### Risk Scatter: Click a dot to see student details")
-    color_map = {'🔴 Critical':'red','🟡 Warning':'yellow','🟢 Safe':'green'}
+    color_map = {'Critical':'red','Warning':'yellow','Safe':'green'}
     if not df.empty and 'Risk_Category' in df.columns:
         # Prepare data for plotting
         plot_df = df.copy()
@@ -289,8 +311,9 @@ with tab2:
     else:
         st.info("Not enough data for scatter plot.")
 
-# ---------- Tab 3: Student Details ----------
-with tab3:
+# ---------- View: Student Details ----------
+elif choice == "Student Details":
+
     if not df.empty:
         lookup = st.selectbox("Select Student", df['Name'].sort_values().unique())
         
@@ -300,7 +323,8 @@ with tab3:
                 s = subset.iloc[0]
                 st.markdown(f"### Student: {s['Name']}")
                 col1, col2, col3, col4, col5 = st.columns(5)
-                col1.metric("Final Mark", f"{s['Final_Mark']:.2f} / {total_target:.2f}")
+                col1.metric("Final Mark", f"{int(s['Final_Mark'])} / {int(total_target)}")
+
                 col2.metric("Engagement", f"{s['Engagement_Score']:.2f}%")
                 col3.metric("Clicks / Week", f"{s.get('Clicks_Per_Week', 0.0):.2f}")
                 col4.metric(f"Total Clicks ({log_window_days}d)", f"{int(s.get('Clicks', 0))}")
@@ -315,13 +339,13 @@ with tab3:
                     is_viewed = s.get(f"viewed_{k}", False)
                     
                     if pts > 0:
-                        status_icon = "✅"
+                        status_icon = "Complete"
                     elif is_overdue:
-                        status_icon = "⚠️"
+                        status_icon = "Overdue"
                     elif is_inprogress or is_viewed:
-                        status_icon = "🔄"
+                        status_icon = "Active"
                     else:
-                        status_icon = "⏳"
+                        status_icon = "Pending"
 
                     breakdown.append({
                         "Assessment": v['name'],
@@ -340,35 +364,22 @@ with tab3:
     else:
          st.info("No data available.")
 
+# ---------- View: Class Analysis ----------
+elif choice == "Class Analysis":
 
-# ---------- Tab 4: Class Analysis ----------
-with tab4:
     render_class_analytics(course_id, users_raw, quizzes_raw, assigns_raw, submission_data, quiz_attempts_raw)
 
-# ---------- Tab 5: Outreach ----------
-with tab5:
+# ---------- View: Outreach ----------
+elif choice == "Outreach":
+
     render_outreach(df, weight_config, coord_email_input)
 
 
-# ---------- Tab 6: Methodology ----------
-with tab6:
-    st.markdown("### Methodology")
-    st.write(f"""
-    - **Unified Engagement Score ({int(eng_ow*100)}%)**: A composite score of activity and progress:
-        - **Activity ({int(act_w*100)}% of engagement)**: Combined Clicks and Dwell Time (page activity).
-        - **Assessment Completion ({int(comp_w*100)}% of engagement)**: Percentage of **overdue** items submitted.
-    - **Performance Component ({int(perf_ow*100)}%)**: Quality of marks (percentage of available points achieved).
-    - **Risk Score** = 100 - ({eng_ow} * Unified Engagement + {round(perf_ow, 2)} * Performance)
-    - **Risk Categories**:
-        - 🔴 Critical: Risk Score > 75 OR 3+ missed **overdue** quizzes OR 2+ missed **overdue** assignments.
-        - 🟡 Warning: Risk Score 50-75 OR 2+ missed **overdue** quizzes OR 1+ missed **overdue** assignment.
-        - 🟢 Safe: Risk Score < 50.
-    """)
+# ---------- View: Detailed Results ----------
+elif choice == "Detailed Results":
 
-# ---------- Tab 7: Detailed Results ----------
-with tab7:
     st.markdown("### Student Detailed Performance (Editable)")
-    st.info("💡 **Edit assessment scores below and click 'Push to Moodle' to sync changes.**")
+    st.info("Edit assessment scores below and click 'Push to Moodle' to sync changes.")
 
     if df.empty:
         st.info("No data.")
@@ -454,11 +465,11 @@ with tab7:
 
         # Review Pending Changes
         if changes_detected:
-            with st.expander(f"📋 Review Pending Changes ({len(changes_detected)} modifications)", expanded=True):
+            with st.expander(f"Review Pending Changes ({len(changes_detected)} modifications)", expanded=True):
                 for change in changes_detected:
                     st.markdown(f"""
                     **{change['name']}** - {change['item_name']}:
-                    - Old: {change['old_perc']:.2f}% → New: {change['new_perc']:.2f}%
+                    - Old: {change['old_perc']:.2f}% -> New: {change['new_perc']:.2f}%
                     - Reason: {change['reason'] if change['reason'] else '_No reason provided_'}
                     """)
             
@@ -466,9 +477,9 @@ with tab7:
             st.markdown("---")
             col1, col2 = st.columns([3, 1])
             with col1:
-                st.warning("⚠️ **Warning**: This will update grades in your Moodle Gradebook. Make sure you have reviewed all changes above.")
+                st.warning("Warning: This will update grades in your Moodle Gradebook. Make sure you have reviewed all changes above.")
             with col2:
-                if st.button("🔄 Push to Moodle", type="primary"):
+                if st.button("Push to Moodle", type="primary"):
                     from api_service import sync_grade_to_moodle
                     
                     success_count = 0
@@ -490,10 +501,10 @@ with tab7:
                             )
                             
                             if success:
-                                st.success(f"✅ {change['name']} - {change['item_name']}: {message}")
+                                st.success(f"{change['name']} - {change['item_name']}: {message}")
                                 success_count += 1
                             else:
-                                st.error(f"❌ {change['name']} - {change['item_name']}: {message}")
+                                st.error(f"{change['name']} - {change['item_name']}: {message}")
                                 fail_count += 1
                     
                     st.info(f"Sync complete: {success_count} successful, {fail_count} failed/skipped")
@@ -501,13 +512,13 @@ with tab7:
                     # Clear cache to refresh data
                     if success_count > 0:
                         st.cache_data.clear()
-                        st.info("💡 Refresh the page to see updated grades from Moodle.")
+                        st.info("Refresh the page to see updated grades from Moodle.")
 
         # CSV download
         st.markdown("---")
         csv = edited_df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="📥 Download Detailed Results CSV (with adjustments)",
+            label="Download Detailed Results CSV (with adjustments)",
             data=csv,
             file_name="student_detailed_results_edited.csv",
             mime="text/csv"
@@ -515,4 +526,4 @@ with tab7:
 
 
 st.divider()
-st.caption(f"Sync: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Multi-factor Risk Dashboard | Produced by Sunny")
+st.caption(f"Sync: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Data Source: Moodle API | Unified Risk Analytics")

@@ -61,14 +61,14 @@ def send_moodle_message(touserid: int, message: str, clientmsgid: str = ""):
 # ======================================================
 def render_outreach(df, weight_config, coord_email):
 
-    st.markdown("### ✉️ Student Outreach & Messaging")
+    st.markdown("### Student Outreach & Messaging")
 
     if df.empty or 'Risk_Score' not in df.columns:
         st.info("No student data available.")
         return
 
     # ================= FILTERS =================
-    st.markdown("#### 🎯 Filters")
+    st.markdown("#### Segmentation Filters")
 
     col1, col2 = st.columns(2)
 
@@ -76,8 +76,8 @@ def render_outreach(df, weight_config, coord_email):
         t_val = st.slider("Risk Score Threshold", 0, 100, 50)
         cat_filter = st.multiselect(
             "Risk Category",
-            ['🔴 Critical', '🟡 Warning', '🟢 Safe'],
-            default=['🔴 Critical', '🟡 Warning']
+            ['Critical', 'Warning', 'Safe'],
+            default=['Critical', 'Warning']
         )
 
     with col2:
@@ -122,7 +122,7 @@ def render_outreach(df, weight_config, coord_email):
 
     targets = df[final_mask][cols].copy()
 
-    st.markdown(f"### 🎯 Targets ({filter_desc})")
+    st.markdown(f"### Targets ({filter_desc})")
 
     if targets.empty:
         st.info("No students match the criteria.")
@@ -143,21 +143,21 @@ def render_outreach(df, weight_config, coord_email):
 
     # ================= TEMPLATE =================
     st.markdown("---")
-    st.subheader("📝 Message Template")
+    st.subheader("Message Template")
 
     template = st.text_area(
         "Used for BOTH Email and Moodle",
         value="""<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: auto; border: 1px solid #eee; border-radius: 10px; padding: 20px; border-top: 5px solid #2e7d32;">
-    <h3 style="color: #2e7d32; margin-top: 0;">🎓 Course Progress Check-in</h3>
+    <h3 style="color: #2e7d32; margin-top: 0;">Course Progress Check-in</h3>
     <p>Hi <strong>{Name}</strong>,</p>
     <p>We're reaching out to provide a quick update on your course engagement. Here is a summary of your current progress:</p>
     
     <div style="background-color: #f1f8e9; padding: 15px; border-radius: 8px; margin: 20px 0;">
         <ul style="list-style: none; padding: 0; margin: 0;">
-            <li style="margin-bottom: 8px;">📊 <strong>Risk Category:</strong> {Risk_Category}</li>
-            <li style="margin-bottom: 8px;">📝 <strong>Pending Assignments:</strong> {Assignments_Gap}</li>
-            <li style="margin-bottom: 8px;">❓ <strong>Pending Quizzes:</strong> {Quizzes_Gap}</li>
-            <li style="margin-bottom: 0;">🕒 <strong>Last Active:</strong> {Days_Since_Last} days ago</li>
+            <li style="margin-bottom: 8px;"><strong>Risk Category:</strong> {Risk_Category}</li>
+            <li style="margin-bottom: 8px;"><strong>Pending Assignments:</strong> {Assignments_Gap}</li>
+            <li style="margin-bottom: 8px;"><strong>Pending Quizzes:</strong> {Quizzes_Gap}</li>
+            <li style="margin-bottom: 0;"><strong>Last Active:</strong> {Days_Since_Last} days ago</li>
         </ul>
     </div>
     
@@ -171,13 +171,13 @@ def render_outreach(df, weight_config, coord_email):
 
     # ================= CHANNELS =================
     st.markdown("---")
-    st.subheader("📬 Delivery Channels")
+    st.subheader("Delivery Channels")
 
     send_email = st.checkbox("Send Email", value=True)
     send_moodle = st.checkbox("Send Moodle Message", value=True)
 
     # ================= SEND =================
-    if st.button(f"📨 Contact Students ({len(final_targets)})"):
+    if st.button(f"Contact Students ({len(final_targets)})"):
         email_ok = 0
         moodle_ok = 0
 
@@ -190,14 +190,14 @@ def render_outreach(df, weight_config, coord_email):
                 Days_Since_Last=int(r["Days_Since_Last"])
             )
 
-            st.markdown(f"### 👤 Processing: {r['Name']}")
+            st.markdown(f"### Student Record: {r['Name']}")
             
-            with st.expander(f"📄 Message Preview"):
+            with st.expander(f"Message Preview"):
                 st.markdown(body, unsafe_allow_html=True)
 
             # -------- EMAIL --------
             if send_email:
-                st.write("📧 Sending email...")
+                st.write("Sending email...")
                 if send_automated_email(
                     r["Email"],
                     "A quick check-in about your course progress",
@@ -205,13 +205,13 @@ def render_outreach(df, weight_config, coord_email):
                     is_html=True
                 ):
                     email_ok += 1
-                    st.success(f"✅ Email sent to {r['Email']}")
+                    st.success(f"Email sent to {r['Email']}")
                 else:
-                    st.error(f"❌ Email failed: {r['Name']}")
+                    st.error(f"Email failed: {r['Name']}")
 
             # -------- MOODLE --------
             if send_moodle:
-                st.write("💬 Sending Moodle message...")
+                st.write("Sending Moodle message...")
                 
                 ok, res, payload = send_moodle_message(
                     touserid=int(r["User_ID"]),
@@ -220,7 +220,7 @@ def render_outreach(df, weight_config, coord_email):
                 )
 
                 if not ok:
-                    st.error(f"❌ Moodle message failed: {r['Name']}")
+                    st.error(f"Moodle message failed: {r['Name']}")
                     if isinstance(res, dict) and "message" in res:
                         st.error(f"Error details: {res['message']}")
                 else:
@@ -229,7 +229,7 @@ def render_outreach(df, weight_config, coord_email):
             st.markdown("---")
 
         # Final summary
-        st.markdown("## 📊 Sending Summary")
+        st.markdown("## Delivery Summary")
         col1, col2 = st.columns(2)
         with col1:
             st.metric("Emails Sent", f"{email_ok}/{len(final_targets)}")
@@ -238,7 +238,7 @@ def render_outreach(df, weight_config, coord_email):
 
     # ================= COORDINATOR =================
     st.markdown("---")
-    st.subheader("📋 Coordinator Summary")
+    st.subheader("Coordinator Summary")
 
     if st.button("Send Coordinator Summary"):
         summary = f"""Coordinator Alert
@@ -250,6 +250,6 @@ At-risk students: {len(targets)}
         st.code(summary)
 
         if send_automated_email(coord_email, "Course Risk Summary", summary):
-            st.success("✅ Coordinator notified")
+            st.success("Coordinator notified")
         else:
-            st.error("❌ Failed to notify coordinator")
+            st.error("Failed to notify coordinator")

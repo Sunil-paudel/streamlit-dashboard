@@ -8,7 +8,8 @@ def render_detailed_results(df, total_target, weight_config, course_id):
     Renders the Detailed Results tab content and handles grade sync.
     """
     st.markdown("### Student Detailed Performance (Editable)")
-    st.info("💡 **Edit assessment scores below and click 'Push to Moodle' to sync changes.**")
+    st.info("Edit assessment scores below and click 'Push to Moodle' to sync changes.")
+
 
     if df.empty:
         st.info("No data.")
@@ -94,11 +95,13 @@ def render_detailed_results(df, total_target, weight_config, course_id):
 
         # Review Pending Changes
         if changes_detected:
-            with st.expander(f"📋 Review Pending Changes ({len(changes_detected)} modifications)", expanded=True):
+            with st.expander(f"Review Pending Changes ({len(changes_detected)} modifications)", expanded=True):
+
                 for change in changes_detected:
                     st.markdown(f"""
                     **{change['name']}** - {change['item_name']}:
-                    - Old: {change['old_perc']:.2f}% → New: {change['new_perc']:.2f}%
+                    - Old: {change['old_perc']:.2f}% -> New: {change['new_perc']:.2f}%
+
                     - Reason: {change['reason'] if change['reason'] else '_No reason provided_'}
                     """)
             
@@ -106,9 +109,11 @@ def render_detailed_results(df, total_target, weight_config, course_id):
             st.markdown("---")
             col1, col2 = st.columns([3, 1])
             with col1:
-                st.warning("⚠️ **Warning**: This will update grades in your Moodle Gradebook. Make sure you have reviewed all changes above.")
+                st.warning("Warning: This will update grades in your Moodle Gradebook. Make sure you have reviewed all changes above.")
+
             with col2:
-                if st.button("🔄 Push to Moodle", type="primary"):
+                if st.button("Push to Moodle", type="primary"):
+
                     
                     success_count = 0
                     fail_count = 0
@@ -119,7 +124,8 @@ def render_detailed_results(df, total_target, weight_config, course_id):
                             
                             # Convert percentage back to raw score
                             new_raw = (change['new_perc'] / 100) * change['max_points']
-                            st.write(f"📊 Percentage: {change['new_perc']:.2f}% → Raw score: {new_raw:.2f}/{change['max_points']}")
+                            st.write(f"Percentage: {change['new_perc']:.2f}% -> Raw score: {new_raw:.2f}/{change['max_points']}")
+
                             
                             # Sync both assignments and quizzes
                             success, message = sync_grade_to_moodle(
@@ -132,10 +138,12 @@ def render_detailed_results(df, total_target, weight_config, course_id):
                             )
                             
                             if success:
-                                st.success(f"✅ {change['name']} - {change['item_name']}: {message}")
+                                st.success(f"{change['name']} - {change['item_name']}: {message}")
+
                                 success_count += 1
                             else:
-                                st.error(f"❌ {change['name']} - {change['item_name']}: {message}")
+                                st.error(f"{change['name']} - {change['item_name']}: {message}")
+
                                 fail_count += 1
                     
                     st.info(f"Sync complete: {success_count} successful, {fail_count} failed/skipped")
@@ -143,13 +151,15 @@ def render_detailed_results(df, total_target, weight_config, course_id):
                     # Clear cache to refresh data
                     if success_count > 0:
                         st.cache_data.clear()
-                        st.info("💡 Refresh the page to see updated grades from Moodle.")
+                        st.info("Refresh the page to see updated grades from Moodle.")
+
 
         # CSV download
         st.markdown("---")
         csv = edited_df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="📥 Download Detailed Results CSV (with adjustments)",
+            label="Download Detailed Results CSV (with adjustments)",
+
             data=csv,
             file_name="student_detailed_results_edited.csv",
             mime="text/csv"

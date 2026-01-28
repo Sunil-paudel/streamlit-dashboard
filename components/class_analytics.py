@@ -61,7 +61,7 @@ def render_class_analytics(course_id, users_raw, quizzes_raw, assigns_raw, submi
     Renders a 'mini sd.py' dashboard for class and group analysis.
     Uses EXACT logic and variable names from sd.py.
     """
-    st.markdown("## 🏫 Class & Group Analysis")
+    st.markdown("## Class & Group Analysis")
     
     # 1. FETCH GROUPINGS (Like sd.py line 180)
     groupings = get_course_groupings_with_groups_local(course_id)
@@ -164,7 +164,7 @@ def render_class_analytics(course_id, users_raw, quizzes_raw, assigns_raw, submi
 
     # 6. RENDER VISUALIZATIONS (Mirror sd.py)
     st.divider()
-    st.subheader("📊 Average Grades by Assignment and Class")
+    st.subheader("Average Grades by Assignment and Class")
     
     chart_data_list = []
     for key, cfg in weight_config_local.items():
@@ -182,13 +182,13 @@ def render_class_analytics(course_id, users_raw, quizzes_raw, assigns_raw, submi
         fig = px.bar(chart_df, x="Assignment", y="Average Grade", color="Class", barmode="group")
         st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("📊 Performance Statistics")
+    st.subheader("Performance Statistics")
     stats = df.groupby("grouping_name").agg({
         "Final_Mark": ["mean", "median", "min", "max", "count"]
     }).round(2)
     stats.columns = ["Avg Mark", "Median", "Min", "Max", "Count"]
     st.dataframe(stats.reset_index(), use_container_width=True, hide_index=True)
 
-    st.subheader("🏆 Top Performers in Selection")
+    st.subheader("Top Performers in Selection")
     top_5 = df.sort_values("Final_Mark", ascending=False).head(5)
     st.dataframe(top_5[["Name", "Final_Mark", "group_name", "grouping_name"]], use_container_width=True, hide_index=True)

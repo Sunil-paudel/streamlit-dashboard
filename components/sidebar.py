@@ -27,16 +27,19 @@ def render_sidebar():
     # ================== 3. API STATUS CHECK ==================
     api_ok, api_msg = is_api_ready()
     if not api_ok:
-        st.sidebar.error(f"🚫 **Moodle Connection Issue**\n\n{api_msg}")
+        st.sidebar.error(f"Moodle Connection Issue\n\n{api_msg}")
+
         return None
     else:
         # Add a Refresh Button to clear cache
-        if st.sidebar.button("🔄 Refresh Course Data"):
+        if st.sidebar.button("Refresh Course Data"):
+
             st.cache_data.clear()
             st.rerun()
 
     # ================== 4. SIDEBAR COURSE & WEIGHT CONFIG ==================
-    st.sidebar.header("🎓 Course Setup")
+    st.sidebar.header("Course Setup")
+
     courses_df = fetch_all_courses()
     course_id = 1
     
@@ -69,7 +72,8 @@ def render_sidebar():
     if 'prev_log_name' not in st.session_state:
         st.session_state.prev_log_name = None
 
-    log_file = st.sidebar.file_uploader("📂 Upload Moodle Activity Logs (CSV)", type=["csv"])
+    log_file = st.sidebar.file_uploader("Upload Moodle Activity Logs (CSV)", type=["csv"])
+
 
     # Detect Log File change and update date defaults
     if log_file and log_file.name != st.session_state.prev_log_name:
@@ -96,7 +100,8 @@ def render_sidebar():
     st.sidebar.markdown("---")
     coord_email = st.sidebar.text_input("Coordinator Email", value=COORD_EMAIL)
     st.sidebar.markdown("---")
-    st.sidebar.subheader("⚖️ Assessment Weight Setup")
+    st.sidebar.subheader("Assessment Weight Setup")
+
 
     users_raw, quizzes_raw, assigns_raw, submission_data, quiz_attempts_raw = fetch_course_metadata(course_id)
     weight_config = {}
@@ -137,7 +142,8 @@ def render_sidebar():
     st.sidebar.metric("Target Final Mark", f"{total_target:.2f} pts")
 
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🔬 Risk Formula Setup")
+    st.sidebar.subheader("Risk Formula Setup")
+
     with st.sidebar.expander("Customize Weights", expanded=False):
         st.info("Adjust the components that determine student risk.")
         

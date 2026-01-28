@@ -5,13 +5,15 @@ def render_overview(df, total_target, log_window_days, total_dwell_hours):
     """
     Renders the Overview tab content.
     """
-    st.markdown("### 🛑 Early Prevention Alerts")
+    st.markdown("### Early Prevention Alerts")
     if not df.empty and 'Risk_Category' in df.columns:
-        early_warn_df = df[df['Risk_Category'].isin(['🔴 Critical','🟡 Warning'])][['Name', 'Score', 'Assignments_Gap','Quizzes_Gap','Risk_Category']]
+        early_warn_df = df[df['Risk_Category'].isin(['Critical','Warning'])][['Name', 'Score', 'Assignments_Gap','Quizzes_Gap','Risk_Category']]
+
         if not early_warn_df.empty:
             st.dataframe(early_warn_df, width=1000) # Use numeric width instead of "stretch" specifically if older streamlit, but "stretch" is valid in newer. Original used "stretch".
         else:
-            st.success("All students are on track! ✅")
+            st.success("All students are on track.")
+
     else:
         st.info("No data available.")
 

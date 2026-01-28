@@ -6,7 +6,7 @@ def render_risk_scatter(df, total_target):
     Renders the Risk Scatter tab content.
     """
     st.markdown("### Risk Scatter: Click a dot to see student details")
-    color_map = {'🔴 Critical':'red','🟡 Warning':'yellow','🟢 Safe':'green'}
+    color_map = {'Critical':'red','Warning':'yellow','Safe':'green'}
     if not df.empty and 'Risk_Category' in df.columns:
         # Prepare data for plotting
         plot_df = df.copy()
