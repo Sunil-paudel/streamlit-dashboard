@@ -200,7 +200,7 @@ def get_course_user_groups(courseid, userids=None):
             params[f"userids[{i}]"] = uid
     return moodle_call("core_group_get_course_user_groups", params)
 
-def update_assignment_grade(assignment_id, user_id, grade):
+def update_assignment_grade(assignment_id, user_id, grade, apply_to_all=0):
     """
     Updates a student's grade for an assignment using mod_assign_save_grade.
     
@@ -208,6 +208,7 @@ def update_assignment_grade(assignment_id, user_id, grade):
         assignment_id: The assignment ID
         user_id: The student's user ID
         grade: The raw grade value (not percentage)
+        apply_to_all: 1 to apply to all group members, 0 otherwise
     
     Returns:
         API response dict
@@ -219,7 +220,7 @@ def update_assignment_grade(assignment_id, user_id, grade):
         'attemptnumber': -1,  # -1 means the latest attempt
         'addattempt': 0,
         'workflowstate': 'released',
-        'applytoall': 0
+        'applytoall': apply_to_all
     }
     return moodle_call("mod_assign_save_grade", params, method="POST")
 

@@ -24,3 +24,4 @@ google-auth-httplib2
 
 # Utilities
 watchdog
+redis

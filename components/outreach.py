@@ -59,7 +59,7 @@ def send_moodle_message(touserid: int, message: str, clientmsgid: str = ""):
 # ======================================================
 # STREAMLIT OUTREACH UI
 # ======================================================
-def render_outreach(df, weight_config, coord_email):
+def render_outreach(df, weight_config, coord_email, group_mapping=None):
 
     st.markdown("### Student Outreach & Messaging")
 
@@ -112,18 +112,57 @@ def render_outreach(df, weight_config, coord_email):
         final_mask = risk_mask
         filter_desc = "Risk only"
 
+    # Pre-process group and class names for fast lookup
+    group_id_to_name = {str(g['id']): g['name'] for g in group_mapping.get('groups', [])} if group_mapping else {}
+    group_to_grouping = {}
+    if group_mapping and 'groupings' in group_mapping:
+        for gping in group_mapping['groupings']:
+            gp_name = gping.get('name', 'N/A')
+            for grp in gping.get('groups', []):
+                group_to_grouping[str(grp['id'])] = gp_name
+
+    # Add Class/Group columns to the dataframe
+    if group_mapping:
+        def get_cls(uid):
+            u_grps = group_mapping['user_to_groups'].get(str(uid), [])
+            gp_names = list(set([group_to_grouping.get(str(gid), "No Class") for gid in u_grps]))
+            return ", ".join(gp_names) if gp_names else "No Class"
+        
+        def get_grp(uid):
+            u_grps = group_mapping['user_to_groups'].get(str(uid), [])
+            g_names = [group_id_to_name.get(str(gid), "Unknown") for gid in u_grps]
+            return ", ".join(g_names) if g_names else "No Group"
+
+        df['Class'] = df['User_ID'].apply(get_cls)
+        df['Group'] = df['User_ID'].apply(get_grp)
+    else:
+        df['Class'] = "N/A"
+        df['Group'] = "N/A"
+
     # ================= TARGET LIST =================
     cols = [
-        "Name", "Email", "User_ID",
+        "Name", "Class", "Group", "Email", "User_ID",
         "Risk_Score", "Risk_Category",
         "Assignments_Gap", "Quizzes_Gap",
         "Days_Since_Last"
     ]
 
     # Add raw grade columns for all assessments
+    # Pre-calculate counts to handle duplicate names
+    name_counts = {}
+    for k, cfg in weight_config.items():
+        name = cfg['name']
+        name_counts[name] = name_counts.get(name, 0) + 1
+
+    unique_headers = {}
     for key, cfg in weight_config.items():
         grademax = cfg.get('grademax', 100.0)
-        col_name = f"{cfg['name']} ({grademax})"
+        if name_counts.get(cfg['name'], 0) > 1:
+            col_name = f"{cfg['name']} [ID:{cfg['id']}] ({grademax})"
+        else:
+            col_name = f"{cfg['name']} ({grademax})"
+            
+        unique_headers[key] = col_name
         cols.append(col_name)
         # Create display columns from raw data
         df[col_name] = df[f"raw_{key}"].fillna(0).round(2)
@@ -143,7 +182,7 @@ def render_outreach(df, weight_config, coord_email):
         column_config={
             "Select": st.column_config.CheckboxColumn("Contact?", default=True),
             "Risk_Score": st.column_config.NumberColumn("Risk (%)", format="%.2f"),
-            **{f"{cfg['name']} ({cfg.get('grademax', 100.0)})": st.column_config.NumberColumn(f"{cfg['name']}") for key, cfg in weight_config.items()}
+            **{unique_headers[key]: st.column_config.NumberColumn(f"{cfg['name']}") for key, cfg in weight_config.items()}
         },
         disabled=cols,
         hide_index=True

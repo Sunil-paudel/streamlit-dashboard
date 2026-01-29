@@ -29,7 +29,7 @@ from datetime import datetime
 # Import custom components
 from config import COORD_EMAIL
 from utils import send_automated_email
-from api_service import fetch_all_courses, fetch_course_metadata, is_api_ready
+from api_service import fetch_all_courses, fetch_course_metadata, is_api_ready, clear_course_cache
 from data_processing import calculate_student_metrics, process_logs_and_merge, calculate_risk_scores, get_log_date_range
 import plotly.express as px
 from components.class_analytics import render_class_analytics
@@ -68,6 +68,11 @@ if not courses_df.empty:
         course_id = st.sidebar.number_input("Enter Course ID", value=1)
 else:
     course_id = st.sidebar.number_input("Enter Course ID", value=1)
+if course_id:
+    if st.sidebar.button("🔄 Sync New Data from Moodle"):
+        clear_course_cache(course_id)
+        st.success("Cache cleared! Fetching fresh data...")
+        st.rerun()
 
 # Initialize Session State for dynamic log dates
 if 'default_start' not in st.session_state:
@@ -229,12 +234,40 @@ st.divider()
 # Calculate metrics using data_processing module
 student_results, teacher_results = calculate_student_metrics(users_raw, weight_config, course_id, submission_data, quiz_attempts_raw)
 
+# --- INJECT REDIS DRAFTS INTO MAIN PIPELINE ---
+from redis_client import get_redis, PREFIX_DRAFT
+redis_client = get_redis()
+draft_key = f"{PREFIX_DRAFT}{course_id}"
+all_drafts = redis_client.get_json(draft_key) or {} # user_id -> {item_key: val}
+
+if all_drafts:
+    for row in student_results:
+        u_id_str = str(row['User_ID'])
+        if u_id_str in all_drafts:
+            u_drafts = all_drafts[u_id_str]
+            # Override both raw and weighted points for each item
+            for item_k, new_raw in u_drafts.items():
+                row[f"raw_{item_k}"] = float(new_raw)
+                # Re-calculate points based on weight (simplified weight logic)
+                # Note: This is an approximation; ideally calculate_student_metrics handles it.
+                # But for immediate UI feedback, overriding the total is most important.
+            
+            # Recalculate Final_Mark for this row based on injected raw scores
+            f_mark = 0.0
+            for k, cfg in weight_config.items():
+                r_val = float(row.get(f"raw_{k}", 0.0))
+                m_val = float(cfg.get('grademax', 100.0) or 100.0)
+                w_val = float(cfg.get('weight', 0.0))
+                if m_val > 0:
+                    f_mark += (r_val / m_val) * w_val
+            row['Final_Mark'] = round(f_mark, 2)
+
 if not student_results:
     df = pd.DataFrame(columns=['User_ID', 'Name', 'Email', 'Final_Mark', 'Assignments_Gap', 'Quizzes_Gap'])
 else:
     df = pd.DataFrame(student_results)
     # Add a display column for Marks / Total
-    df['Score'] = df['Final_Mark'].apply(lambda x: f"{x} / {total_target}")
+    df['Score'] = df['Final_Mark'].apply(lambda x: f"{x} / {total_target:.2f}")
 
 # ================== 6. LOG INTEGRATION ==================
 if not users_raw:
@@ -248,6 +281,35 @@ if df.empty:
     st.warning("No student data available for risk calculation.")
 else:
     df = calculate_risk_scores(df, weight_config, formula_config=formula_config)
+    
+    # --- ADD CLASS & GROUP ("EVERYWHERE") ---
+    if metadata:
+        # Pre-process group names
+        group_id_to_name = {str(g['id']): g['name'] for g in metadata.get('groups', [])}
+        group_to_grouping = {}
+        if 'groupings' in metadata:
+            for gping in metadata['groupings']:
+                gn = gping.get('name', 'N/A')
+                # Handling moodle response where groups can be nested
+                gs = gping.get('groups', [])
+                for grp in gs:
+                    group_to_grouping[str(grp['id'])] = gn
+
+        def resolve_teams(uid):
+            uid_str = str(uid)
+            # Use metadata mapping directly
+            u_grps = metadata.get('user_to_groups', {}).get(uid_str, [])
+            g_names = [group_id_to_name.get(str(gid), "Unknown") for gid in u_grps]
+            gp_names = list(set([group_to_grouping.get(str(gid), "No Class") for gid in u_grps]))
+            
+            final_cls = ", ".join(gp_names) if gp_names else "No Class"
+            final_grp = ", ".join(g_names) if g_names else "No Group"
+            return final_cls, final_grp
+
+        df['Class'], df['Group'] = zip(*df['User_ID'].map(resolve_teams))
+    else:
+        df['Class'] = "N/A"
+        df['Group'] = "N/A"
 
 
 # ================== 8. COURSE TEAM ==================
@@ -265,9 +327,9 @@ choice = st.session_state.nav_choice
 if choice == "Overview":
     st.markdown("### Early Prevention Alerts")
     if not df.empty and 'Risk_Category' in df.columns:
-        early_warn_df = df[df['Risk_Category'].isin(['Critical','Warning'])][['Name', 'Score', 'Assignments_Gap','Quizzes_Gap','Risk_Category']]
+        early_warn_df = df[df['Risk_Category'].isin(['Critical','Warning'])][['Name', 'Class', 'Group', 'Score', 'Assignments_Gap','Quizzes_Gap','Risk_Category']]
         if not early_warn_df.empty:
-            st.dataframe(early_warn_df, use_container_width=True)
+            st.dataframe(early_warn_df, use_container_width=True, hide_index=True)
         else:
             st.success("All students are on track.")
     else:
@@ -310,6 +372,8 @@ elif choice == "Risk Scatter":
             color_discrete_map=color_map,
             hover_name='Name',
             hover_data={
+                'Class': True,
+                'Group': True,
                 'Performance_Perc': False,
                 'Score': True,
                 'Assignments_Gap': True,
@@ -346,13 +410,12 @@ elif choice == "Class Analysis":
 
 # ---------- View: Outreach ----------
 elif choice == "Outreach":
-
-    render_outreach(df, weight_config, coord_email_input)
+    render_outreach(df, weight_config, coord_email_input, group_mapping=group_mapping)
 
 
 # ---------- View: Detailed Results ----------
 elif choice == "Detailed Results":
-    render_detailed_results(df, total_target, weight_config, course_id, group_mapping=group_mapping)
+    render_detailed_results(df, total_target, weight_config, course_id, group_mapping=group_mapping, metadata=metadata)
 
 
 st.divider()
