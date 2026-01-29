@@ -100,14 +100,20 @@ def render_class_analytics(course_id, users_raw, quizzes_raw, assigns_raw, submi
     with col3:
         assessment_filter = st.selectbox("Assessment Type", ["All", "Assignments", "Quizzes"], key="ca_type_sel")
 
-    # 3. BUILD STUDENT-TO-GROUPING MAPPING (Exactly like sd.py line 229-258)
     # Filter students only (sd.py logic)
-    students = [
-        u for u in users_raw 
-        if u.get("id") != 0  
-        and u.get("username") not in ["guest", ""] 
-        and not any(r.get('shortname') in ['teacher', 'editingteacher', 'manager'] for r in u.get('roles', []))
-    ]
+    staff_roles = ['teacher', 'editingteacher', 'manager', 'coursecreator', 'staff', 'grader', 'admin', 'administrator']
+    students = []
+    for u in users_raw:
+        if u.get("id") == 0 or u.get("username") in ["guest", ""]:
+            continue
+            
+        u_roles = []
+        for r in u.get('roles', []):
+            if r.get('shortname'): u_roles.append(r['shortname'].lower())
+            if r.get('name'): u_roles.append(r['name'].lower())
+        
+        if not any(role in staff_roles for role in u_roles):
+            students.append(u)
     
     student_to_grouping_local = {}
     for student in students:

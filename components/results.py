@@ -6,7 +6,7 @@ from redis_client import get_redis, PREFIX_DRAFT
 
 redis = get_redis()
 
-def render_detailed_results(df, total_target, weight_config, course_id, group_mapping=None, metadata=None):
+def render_detailed_results(df, total_target, weight_config, course_id, group_mapping=None, metadata=None, moodle_baseline=None):
     """
     Renders the Detailed Results tab content and handles grade sync.
     """
@@ -25,7 +25,6 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
         uid_to_name = {str(u['id']): u['fullname'] for u in metadata.get('users', [])} if metadata else {}
         
         # Pre-calculate unique headers to prevent stacking if names are identical
-        # ... [rest of logic] ...
         header_mapping = {} # key -> unique_header
         name_counts = {}
         for k, cfg in weight_config.items():
@@ -108,18 +107,21 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
         # Build original moodle values map for change detection relative to REAL Moodle data
         # Mapping: user_id -> {item_key: raw_val}
         moodle_vals = {}
-        for _, u in df.iterrows():
-            uid = str(u['User_ID'])
+        baseline_source = moodle_baseline if moodle_baseline else df.to_dict('records')
+        for u in baseline_source:
+            uid = str(u.get('User_ID'))
             moodle_vals[uid] = {}
             for k in weight_config.keys():
                 moodle_vals[uid][k] = float(u.get(f"raw_{k}", 0.0))
 
         # Detect changes and UPDATE Redis Draft
         changes_detected = []
-        new_redis_drafts = {} # We'll rebuild this to capture all current diffs
+        new_redis_drafts = {} 
         
         df_edit = edited_df.set_index('User_ID')
         
+        # --- PASS 1: Detect ACTIVE USER EDITS (Prioritize these) ---
+        # If a user explicitly changes a cell, that "Intent" propagates to the group.
         for u_id_int in df_edit.index:
             u_id = str(u_id_int)
             edit_row = df_edit.loc[u_id_int]
@@ -127,7 +129,7 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
             for col in editable_cols:
                 val_edit = float(edit_row[col])
                 
-                # Correctly identify item_key using header_mapping
+                # Identify item_key
                 item_key = None
                 for k, header in header_mapping.items():
                     if header == col:
@@ -135,11 +137,16 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
                         break
                 
                 if item_key:
-                    # Compare with ORIGINAL MOODLE DATA
-                    orig_moodle_val = moodle_vals.get(u_id, {}).get(item_key, 0.0)
+                    # Current Draft Value (or Moodle Baseline if no draft)
+                    current_draft_val = existing_drafts.get(u_id, {}).get(item_key)
+                    if current_draft_val is None:
+                        current_draft_val = moodle_vals.get(u_id, {}).get(item_key, 0.0)
                     
-                    if abs(orig_moodle_val - val_edit) > 0.001:
-                        # 1. Identify all target users for this change
+                    # Check if ACTIVE EDIT (Differs from what was loaded)
+                    if abs(val_edit - float(current_draft_val)) > 0.001:
+                        # User just typed this! Trigger Propagation.
+                        
+                        # 1. Identify Group Members
                         target_uids = [u_id]
                         is_group_assign = (weight_config[item_key]['type'] == 'assign' and 
                                           weight_config[item_key].get('teamsubmission') == 1)
@@ -160,33 +167,77 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
                             
                             if target_group_id:
                                 members = group_mapping['group_membership'].get(str(target_group_id), [])
-                                target_uids = list(set([str(u_id)] + [str(m) for m in members]))
+                                # Filter staff
+                                staff_roles = ['teacher', 'editingteacher', 'manager', 'coursecreator', 'staff', 'grader', 'admin', 'administrator']
+                                student_ids_in_metadata = set()
+                                if metadata and 'users' in metadata:
+                                    for user_obj in metadata['users']:
+                                        u_roles = []
+                                        for r in user_obj.get('roles', []):
+                                            if r.get('shortname'): u_roles.append(r['shortname'].lower())
+                                            if r.get('name'): u_roles.append(r['name'].lower())
+                                        if not any(role in staff_roles for role in u_roles):
+                                            student_ids_in_metadata.add(str(user_obj['id']))
 
-                        # 2. Record the change for ALL target users
+                                target_uids = list(set([str(u_id)] + [str(m) for m in members if str(m) in student_ids_in_metadata]))
+
+                        # 2. Apply Active Edit to All Targets
                         for target_id in target_uids:
                             target_id_str = str(target_id)
-                            # Update Redis Drafts
                             if target_id_str not in new_redis_drafts: new_redis_drafts[target_id_str] = {}
                             new_redis_drafts[target_id_str][item_key] = val_edit
-                            
-                            # Update Review Table (ensure uniqueness)
-                            if not any(c['user_id'] == int(target_id_str) and c['item_key'] == item_key for c in changes_detected):
-                                t_name = edit_row['Name'] if target_id_str == u_id else uid_to_name.get(target_id_str, f"User {target_id_str}")
-                                t_orig = moodle_vals.get(target_id_str, {}).get(item_key, 0.0)
-                                
-                                changes_detected.append({
-                                    'user_id': int(target_id_str),
-                                    'name': t_name,
-                                    'item_key': item_key,
-                                    'item_name': weight_config[item_key]['name'],
-                                    'item_type': weight_config[item_key]['type'],
-                                    'item_id': weight_config[item_key]['id'],
-                                    'item_cmid': weight_config[item_key].get('cmid'),
-                                    'old_raw': t_orig,
-                                    'new_raw': val_edit,
-                                    'max_points': weight_config[item_key].get('grademax', 100.0),
-                                    'reason': edit_row.get('Adjustment Reason', '')
-                                })
+
+        # --- PASS 2: Detect PASSIVE/EXISTING DRAFTS (Fill gaps) ---
+        # If a value differs from Moodle but wasn't "Just Edited" (i.e. it's a preserved draft), keep it.
+        # BUT do NOT overwrite anything set in Pass 1.
+        for u_id_int in df_edit.index:
+            u_id = str(u_id_int)
+            edit_row = df_edit.loc[u_id_int]
+            
+            for col in editable_cols:
+                val_edit = float(edit_row[col])
+                
+                # Identify item_key
+                item_key = None
+                for k, header in header_mapping.items():
+                    if header == col:
+                        item_key = k
+                        break
+                
+                if item_key:
+                    orig_moodle_val = moodle_vals.get(u_id, {}).get(item_key, 0.0)
+                    
+                    # If this row differs from moodle, it's a pending change.
+                    if abs(val_edit - orig_moodle_val) > 0.001:
+                        # Add to draft only if PASS 1 didn't already touch this cell
+                        if u_id not in new_redis_drafts or item_key not in new_redis_drafts[u_id]:
+                            if u_id not in new_redis_drafts: new_redis_drafts[u_id] = {}
+                            new_redis_drafts[u_id][item_key] = val_edit
+
+        # --- GENERATE CHANGES DETECTED LIST (From the final consolidated drafts) ---
+        for u_id, items in new_redis_drafts.items():
+            for item_key, val_new in items.items():
+                # Find display info
+                orig_val = moodle_vals.get(u_id, {}).get(item_key, 0.0)
+                
+                # Find Name logic (from ID)
+                name_disp = uid_to_name.get(u_id, f"User {u_id}")
+                # Try to get from dataframe if possible for better match? 
+                # (uid might not be in edit_df if filtered, but usually is)
+                
+                changes_detected.append({
+                    'user_id': int(u_id),
+                    'name': name_disp,
+                    'item_key': item_key,
+                    'item_name': weight_config[item_key]['name'],
+                    'item_type': weight_config[item_key]['type'],
+                    'item_id': weight_config[item_key]['id'],
+                    'item_cmid': weight_config[item_key].get('cmid'),
+                    'old_raw': orig_val,
+                    'new_raw': val_new,
+                    'max_points': weight_config[item_key].get('grademax', 100.0),
+                    'reason': '' # Reason tracking is complex with propagation, simplifying to empty for auto-prop
+                })
 
         # Save current diffs back to Redis
         if new_redis_drafts != existing_drafts:
@@ -201,66 +252,92 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
                 st.info("💡 **Note**: Some changes are for **Group Assignments**. Updates will automatically be applied to all group members.")
 
             with st.expander(f"Review Pending Changes ({len(changes_detected)} modifications)", expanded=True):
-                # Show a summary table
-                review_df = pd.DataFrame(changes_detected)
-                st.table(review_df[['name', 'item_name', 'old_raw', 'new_raw', 'max_points']])
+                st.write("This list includes **all unsaved drafts**, including edits from previous sessions.")
+                st.write("You can deselect students or override individual marks below before syncing.")
+                
+                col_clear, _ = st.columns([1, 4])
+                with col_clear:
+                    if st.button("🗑️ Clear All Drafts", type="secondary"):
+                        redis.delete(draft_key)
+                        st.rerun()
+                
+                # Convert to editable DF for selective sync
+                review_list = []
+                for c in changes_detected:
+                    review_list.append({
+                        "Sync": True,
+                        "Name": c['name'],
+                        "Assessment": c['item_name'],
+                        "Old Mark": round(c['old_raw'], 2),
+                        "New Mark": round(c['new_raw'], 2),
+                        "Max": c['max_points'],
+                        "Reason": c['reason'],
+                        "user_id": c['user_id'], # hidden ID
+                        "item_key": c['item_key'] # hidden key
+                    })
+                
+                review_df = pd.DataFrame(review_list)
+                edited_review = st.data_editor(
+                    review_df,
+                    column_config={
+                        "Sync": st.column_config.CheckboxColumn("Sync?", default=True),
+                        "New Mark": st.column_config.NumberColumn("New Mark", min_value=0.0, step=0.1),
+                        "Name": st.column_config.TextColumn("Name", disabled=True),
+                        "Assessment": st.column_config.TextColumn("Assessment", disabled=True),
+                        "Old Mark": st.column_config.TextColumn("Old Mark", disabled=True),
+                        "Max": st.column_config.TextColumn("Max", disabled=True),
+                        "Reason": st.column_config.TextColumn("Reason", disabled=True),
+                        "user_id": None, # hide
+                        "item_key": None  # hide
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    key="sync_editor"
+                )
 
-                for change in changes_detected:
-                    st.markdown(f"""
-                    **{change['name']}** - {change['item_name']}:
-                    - Old: {change['old_raw']:.2f} -> New: {change['new_raw']:.2f} (Max: {change['max_points']})
-                    - Reason: {change['reason'] if change['reason'] else '_No reason provided_'}
-                    """)
-            
+                # Filter finalized list based on checkboxes and overrides
+                final_sync_list = []
+                overridden_drafts = {} # user_id -> {item_key: val}
+                
+                for _, row in edited_review.iterrows():
+                    if row["Sync"]:
+                        # Find the original change object and update it
+                        orig_c = next((c for c in changes_detected if c['user_id'] == row['user_id'] and c['item_key'] == row['item_key']), None)
+                        if orig_c:
+                            orig_c['new_raw'] = float(row['New Mark'])
+                            final_sync_list.append(orig_c)
+                            
+                            # Record for draft update
+                            uid_s = str(row['user_id'])
+                            if uid_s not in overridden_drafts: overridden_drafts[uid_s] = {}
+                            overridden_drafts[uid_s][row['item_key']] = float(row['New Mark'])
+
+                # Update Redis drafts if user did manual overrides in the sync table
+                if overridden_drafts:
+                    current_redis = redis.get_json(draft_key) or {}
+                    changed_any = False
+                    for u, items in overridden_drafts.items():
+                        for k, v in items.items():
+                            if u in current_redis and k in current_redis[u] and abs(current_redis[u][k] - v) > 0.001:
+                                current_redis[u][k] = v
+                                changed_any = True
+                    if changed_any:
+                        redis.set_json(draft_key, current_redis)
+
             # Push to Moodle button
             st.markdown("---")
             col1, col2 = st.columns([3, 1])
             with col1:
-                st.warning("Warning: This will update grades in your Moodle Gradebook. Make sure you have reviewed all changes above.")
+                st.warning(f"Warning: This will update grades for {len(final_sync_list)} selected students. Make sure you have reviewed all changes above.")
 
             with col2:
-                if st.button("Push to Moodle", type="primary"):
+                if st.button("Push to Moodle", type="primary", disabled=len(final_sync_list) == 0):
                     success_count = 0
                     fail_count = 0
                     
                     with st.spinner("Syncing grades to Moodle..."):
-                        synced_users_this_batch = set()
-                        
-                        for change in changes_detected:
-                            if change['user_id'] in synced_users_this_batch:
-                                continue
-
-                            # 1. Check for group assignment propagation
-                            is_group_assign = (change['item_type'] == 'assign' and 
-                                              weight_config.get(change['item_key'], {}).get('teamsubmission') == 1)
-                            
-                            target_user_ids = [change['user_id']]
-                            apply_all_flag = False
-
-                            if is_group_assign and group_mapping:
-                                apply_all_flag = True
-                                # Find other members just to clear their local drafts later
-                                uid_str = str(change['user_id'])
-                                grouping_id = weight_config[change['item_key']].get('groupingid')
-                                user_groups = group_mapping['user_to_groups'].get(uid_str, [])
-                                
-                                target_group_id = None
-                                if grouping_id and grouping_id > 0:
-                                    for grouping in group_mapping['groupings']:
-                                        if grouping['id'] == grouping_id:
-                                            groups_in_grouping = [g['id'] for g in grouping.get('groups', [])]
-                                            common = list(set(user_groups) & set(groups_in_grouping))
-                                            if common: target_group_id = common[0]
-                                            break
-                                else:
-                                    if user_groups: target_group_id = user_groups[0]
-                                
-                                if target_group_id:
-                                    members = group_mapping['group_membership'].get(str(target_group_id), [])
-                                    target_user_ids = list(set(target_user_ids + members))
-                                    st.write(f"👥 **Group Detected**: Syncing and propagating to {len(target_user_ids)} members...")
-
-                            # 2. Sync for the primary user (with apply_to_all if group assignment)
+                        for change in final_sync_list:
+                            # 2. Sync for this specific user individually
                             success, message = sync_grade_to_moodle(
                                 course_id=course_id,
                                 user_id=change['user_id'],
@@ -268,23 +345,20 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
                                 item_type=change['item_type'],
                                 grade_value=change['new_raw'],
                                 item_cmid=change.get('item_cmid'),
-                                apply_to_all=apply_all_flag
+                                apply_to_all=False 
                             )
                             
                             if success:
                                 st.success(f"✅ {change['name']}: {message}")
                                 success_count += 1
                                 
-                                # 3. Mark all affected users as synced and clear their local drafts
+                                # Clear local draft for this specific user/item
                                 current_drafts = redis.get_json(draft_key) or {}
                                 item_k = change['item_key']
-                                
-                                for uid in target_user_ids:
-                                    synced_users_this_batch.add(uid)
-                                    uid_str = str(uid)
-                                    if uid_str in current_drafts and item_k in current_drafts[uid_str]:
-                                        del current_drafts[uid_str][item_k]
-                                        if not current_drafts[uid_str]: del current_drafts[uid_str]
+                                uid_str = str(change['user_id'])
+                                if uid_str in current_drafts and item_k in current_drafts[uid_str]:
+                                    del current_drafts[uid_str][item_k]
+                                    if not current_drafts[uid_str]: del current_drafts[uid_str]
                                 
                                 redis.set_json(draft_key, current_drafts)
                             else:

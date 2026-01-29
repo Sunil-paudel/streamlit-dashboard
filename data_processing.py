@@ -26,12 +26,15 @@ def calculate_student_metrics(users_raw, weight_config, course_id, submission_da
     """
     student_results = []
     teacher_results = []
-    staff_roles = ['teacher', 'editingteacher', 'manager', 'coursecreator']
-
-    # submission_data is {assign_id: {user_id: submission_dict}}
+    staff_roles = ['teacher', 'editingteacher', 'manager', 'coursecreator', 'staff', 'grader', 'admin', 'administrator']
 
     for user in users_raw:
-        user_roles = [r.get('shortname', '').lower() for r in user.get('roles', [])]
+        # Check both shortname and name for safety
+        user_roles = []
+        for r in user.get('roles', []):
+            if r.get('shortname'): user_roles.append(r['shortname'].lower())
+            if r.get('name'): user_roles.append(r['name'].lower())
+            
         is_staff = any(role in staff_roles for role in user_roles)
         u_info = {'User_ID': user['id'], 'Name': user['fullname'], 'Email': user.get('email', 'N/A')}
 
@@ -314,9 +317,17 @@ def process_logs_and_merge(df, log_file, users_raw, start_date=None, end_date=No
                     window_days = 7 # fallback
 
                 # Create a set of enrolled student names (exclude staff)
-                student_names = [u['fullname'] for u in users_raw
-                                 if not any(r['shortname'] in ['teacher','editingteacher','manager','coursecreator']
-                                            for r in u.get('roles', []))]
+                staff_roles = ['teacher', 'editingteacher', 'manager', 'coursecreator', 'staff', 'grader', 'admin', 'administrator']
+                student_names = []
+                for u in users_raw:
+                    u_roles = []
+                    for r in u.get('roles', []):
+                        if r.get('shortname'): u_roles.append(r['shortname'].lower())
+                        if r.get('name'): u_roles.append(r['name'].lower())
+                    
+                    if not any(role in staff_roles for role in u_roles):
+                        student_names.append(u['fullname'])
+                
                 student_names_lower = [n.lower() for n in student_names]
 
                 # Normalize log names

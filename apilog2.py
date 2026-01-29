@@ -233,6 +233,7 @@ st.divider()
 
 # Calculate metrics using data_processing module
 student_results, teacher_results = calculate_student_metrics(users_raw, weight_config, course_id, submission_data, quiz_attempts_raw)
+moodle_baseline_list = [r.copy() for r in student_results] # Keep clean Moodle baseline for Results sync logic
 
 # --- INJECT REDIS DRAFTS INTO MAIN PIPELINE ---
 from redis_client import get_redis, PREFIX_DRAFT
@@ -248,9 +249,6 @@ if all_drafts:
             # Override both raw and weighted points for each item
             for item_k, new_raw in u_drafts.items():
                 row[f"raw_{item_k}"] = float(new_raw)
-                # Re-calculate points based on weight (simplified weight logic)
-                # Note: This is an approximation; ideally calculate_student_metrics handles it.
-                # But for immediate UI feedback, overriding the total is most important.
             
             # Recalculate Final_Mark for this row based on injected raw scores
             f_mark = 0.0
@@ -415,7 +413,7 @@ elif choice == "Outreach":
 
 # ---------- View: Detailed Results ----------
 elif choice == "Detailed Results":
-    render_detailed_results(df, total_target, weight_config, course_id, group_mapping=group_mapping, metadata=metadata)
+    render_detailed_results(df, total_target, weight_config, course_id, group_mapping=group_mapping, metadata=metadata, moodle_baseline=moodle_baseline_list)
 
 
 st.divider()
