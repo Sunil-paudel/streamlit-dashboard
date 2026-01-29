@@ -43,8 +43,7 @@ if not api_ok:
     st.sidebar.error(f"Moodle Connection Issue\n\n{api_msg}")
     st.info("System Configuration Required. Please check Moodle settings in the .env file.")
     st.stop()
-else:
-    st.sidebar.success("Moodle Connection Established")
+
 # ================== 4. SIDEBAR COURSE & WEIGHT CONFIG ==================
 st.sidebar.header("Course Setup")
 courses_df = fetch_all_courses()
@@ -68,11 +67,7 @@ if not courses_df.empty:
         course_id = st.sidebar.number_input("Enter Course ID", value=1)
 else:
     course_id = st.sidebar.number_input("Enter Course ID", value=1)
-if course_id:
-    if st.sidebar.button("🔄 Sync New Data from Moodle"):
-        clear_course_cache(course_id)
-        st.success("Cache cleared! Fetching fresh data...")
-        st.rerun()
+
 
 # Initialize Session State for dynamic log dates
 if 'default_start' not in st.session_state:
@@ -166,12 +161,7 @@ with st.sidebar.expander("Set Assessment Weights", expanded=True):
 
 st.sidebar.metric("Target Final Mark", f"{total_target:.2f} pts")
 
-with st.sidebar.expander("Moodle Metadata Debug"):
-    for k, v in weight_config.items():
-        st.write(f"**{v['name']}**")
-        st.write(f"- Moodle ID: {v['id']}")
-        st.write(f"- Moodle Max Grade: {v.get('grademax', 'N/A')}")
-        st.write(f"- Sidebar Weight: {v['weight']}")
+
 st.sidebar.subheader("Risk Formula Setup")
 with st.sidebar.expander("Customize Weights", expanded=False):
     st.info("Adjust the components that determine student risk.")
@@ -229,7 +219,24 @@ st.session_state.nav_choice = st.radio(
     horizontal=True,
     label_visibility="collapsed"
 )
-st.divider()
+
+# --- CSS: Reduce Whitespace ---
+st.markdown("""
+<style>
+    .block-container {
+        padding-top: 2rem !important;
+        padding-bottom: 1rem !important;
+    }
+    .element-container {
+        margin-bottom: 0.5rem !important;
+    }
+    /* Reduce gap between vertical elements */
+    [data-testid="stVerticalBlock"] > div {
+        gap: 0.5rem !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 
 # Calculate metrics using data_processing module
 student_results, teacher_results = calculate_student_metrics(users_raw, weight_config, course_id, submission_data, quiz_attempts_raw)
@@ -324,12 +331,39 @@ choice = st.session_state.nav_choice
 # ---------- View: Overview ----------
 if choice == "Overview":
     st.markdown("### Early Prevention Alerts")
+
     if not df.empty and 'Risk_Category' in df.columns:
-        early_warn_df = df[df['Risk_Category'].isin(['Critical','Warning'])][['Name', 'Class', 'Group', 'Score', 'Assignments_Gap','Quizzes_Gap','Risk_Category']]
-        if not early_warn_df.empty:
-            st.dataframe(early_warn_df, use_container_width=True, hide_index=True)
-        else:
-            st.success("All students are on track.")
+        
+        col_alerts, col_chart = st.columns([1.5, 1])
+        
+        with col_alerts:
+            early_warn_df = df[df['Risk_Category'].isin(['Critical','Warning'])][['Name', 'Class', 'Group', 'Score', 'Assignments_Gap','Quizzes_Gap','Risk_Category']]
+            if not early_warn_df.empty:
+                st.write("**At-Risk Students**")
+                st.dataframe(early_warn_df, use_container_width=True, hide_index=True)
+            else:
+                st.success("🎉 No students currently at risk!")
+
+        with col_chart:
+            # Risk Distribution Donut
+            risk_counts = df['Risk_Category'].value_counts().reset_index()
+            risk_counts.columns = ['Category', 'Count']
+            
+            color_map = {'Critical': '#ff4b4b', 'Warning': '#ffa421', 'Safe': '#00c0f2'}
+            
+            fig_donut = px.pie(
+                risk_counts, 
+                values='Count', 
+                names='Category', 
+                color='Category',
+                color_discrete_map=color_map,
+                hole=0.4,
+                title="Class Risk Distribution"
+            )
+            fig_donut.update_traces(textinfo='percent+label', textposition='inside')
+            fig_donut.update_layout(showlegend=False, margin=dict(t=30, b=0, l=0, r=0), height=300)
+            st.plotly_chart(fig_donut, use_container_width=True)
+
     else:
         st.info("No data available.")
 
@@ -347,55 +381,84 @@ if choice == "Overview":
              m4.metric("Avg Risk Score", "0.00%")
 
 # ---------- View: Risk Scatter ----------
+# ---------- View: Risk Radar (Advanced) ----------
 elif choice == "Risk Scatter":
-
-    st.markdown("### Risk Scatter: Click a dot to see student details")
-    color_map = {'Critical':'red','Warning':'yellow','Safe':'green'}
+    st.markdown("### 📡 Risk Radar: Engagement vs. Performance")
+    st.info("This 'Radar' helps you spot students who are **Struggling** (Working hard but failing) vs. **Disengaged** (Not trying).")
+    
     if not df.empty and 'Risk_Category' in df.columns:
-        # Prepare data for plotting
+        # Prepare data
         plot_df = df.copy()
-        # 1. Normalize Performance to % (to handle courses with different total marks)
         target = max(total_target, 1)
         plot_df['Performance_Perc'] = (plot_df['Final_Mark'] / target * 100).round(2)
         
-        # 2. Ensure every dot is visible by adding a minimum size constant
-        plot_df['Plot_Size'] = plot_df['Dwell_Hours'] + 5 
+        # 1. Cap the dot size so high-dwell students don't block others
+        # Base size 8, add log scale or just simple cap. Let's cap at 25.
+        plot_df['Plot_Size'] = (plot_df.get('Dwell_Hours', 0) + 8).clip(upper=25)
+        
+        # --- JITTER LOGIC (To separate overlapping points) ---
+        # Increased jitter range to 2.5 for stronger separation of dense clusters
+        plot_df['Eng_Jitter'] = plot_df['Engagement_Score'] + np.random.uniform(-2.5, 2.5, len(plot_df))
+        plot_df['Perf_Jitter'] = plot_df['Performance_Perc'] + np.random.uniform(-2.5, 2.5, len(plot_df))
 
+        # Define Colors
+        color_map = {'Critical': '#ff4b4b', 'Warning': '#ffa421', 'Safe': '#00c0f2'} # Streamlit-like colors
+        
         fig = px.scatter(
             plot_df,
-            x='Engagement_Score',
-            y='Performance_Perc',
+            x='Eng_Jitter',    # Use Jittered coordinates
+            y='Perf_Jitter',   # Use Jittered coordinates
             size='Plot_Size',
             color='Risk_Category',
+            opacity=0.7,       # More transparent to show density
             color_discrete_map=color_map,
             hover_name='Name',
             hover_data={
                 'Class': True,
-                'Group': True,
-                'Performance_Perc': False,
-                'Score': True,
+                'Risk_Category': True,
+                'Performance_Perc': True,
+                'Engagement_Score': ':.1f',
                 'Assignments_Gap': True,
                 'Quizzes_Gap': True,
-                'Risk_Score': True,
-                'Engagement_Score': ':.2f',
-                'Plot_Size': False 
+                'Plot_Size': False,
+                'Eng_Jitter': False, # Hide jitter columns
+                'Perf_Jitter': False
             },
             labels={
-                'Engagement_Score':'Engagement (%)',
-                'Performance_Perc':'Performance (%)',
-                'Score': 'Current Score',
-                'Assignments_Gap': 'Missed Assignments',
-                'Quizzes_Gap': 'Missed Quizzes',
-                'Risk_Score': 'Risk Score'
+                'Engagement_Score': 'Engagement (Clicks + Time)',
+                'Performance_Perc': 'Performance (Grades %)',
+                'Assignments_Gap': 'Missed Asg',
+                'Quizzes_Gap': 'Missed Quiz'
             },
-            height=600
+            height=650
         )
-        # Ensure axis ranges are -5 to 105 so nothing is cut off at the edges
-        fig.update_yaxes(range=[-5, 105], title_text="Performance % (Weighted Mark / Total)")
-        fig.update_xaxes(range=[-5, 105], title_text="Engagement Score (%)")
+        
+        # Add Border to markers for distinct edges
+        fig.update_traces(marker=dict(line=dict(width=1, color='White')))
+        
+        # Force Hovermode to 'closest' (fixes overlapping tooltips)
+        fig.update_layout(hovermode="closest")
+        
+        # Add Quadrant Lines (The "Radar" Crosshair)
+        avg_eng = 50 # Center line at 50% engagement
+        pass_mark = 50 # Pass mark at 50%
+        
+        fig.add_vline(x=avg_eng, line_width=1, line_dash="dash", line_color="grey")
+        fig.add_hline(y=pass_mark, line_width=1, line_dash="dash", line_color="grey")
+
+        # Add Quadrant Labels
+        fig.add_annotation(x=15, y=15, text="🚨 DANGER ZONE\n(Dropouts)", showarrow=False, font=dict(color="red", size=14))
+        fig.add_annotation(x=85, y=15, text="❓ STRUGGLING\n(Needs Help)", showarrow=False, font=dict(color="orange", size=14))
+        fig.add_annotation(x=15, y=85, text="🥷 NINJAS\n(Smart/Lucky)", showarrow=False, font=dict(color="blue", size=12))
+        fig.add_annotation(x=85, y=85, text="⭐ STARS\n(Ideal)", showarrow=False, font=dict(color="green", size=14))
+
+        # Fix Axes
+        fig.update_xaxes(range=[-5, 105], title_font=dict(size=14))
+        fig.update_yaxes(range=[-5, 105], title_font=dict(size=14))
+        
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Not enough data for scatter plot.")
+        st.warning("Not enough data to generate the Risk Radar. Need logs and grades.")
 
 # ---------- View: Student Details ----------
 elif choice == "Student Details":
