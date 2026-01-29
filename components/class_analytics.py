@@ -68,7 +68,7 @@ def render_class_analytics(course_id, users_raw, quizzes_raw, assigns_raw, submi
     groupings = get_course_groupings_with_groups_local(course_id)
     
     # 2. INTERNAL FILTERS (Like sd.py line 186-212)
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         grouping_options = {"All Classes": None}
         if groupings:
@@ -96,6 +96,9 @@ def render_class_analytics(course_id, users_raw, quizzes_raw, assigns_raw, submi
         group_options = {g.get("name", f"Group {g.get('id')}"): g.get("id") for g in filtered_groups}
         selected_group_name = st.selectbox("Select Group (Optional)", ["All"] + list(group_options.keys()), key="ca_group_sel")
         selected_group_id = group_options.get(selected_group_name)
+
+    with col3:
+        assessment_filter = st.selectbox("Assessment Type", ["All", "Assignments", "Quizzes"], key="ca_type_sel")
 
     # 3. BUILD STUDENT-TO-GROUPING MAPPING (Exactly like sd.py line 229-258)
     # Filter students only (sd.py logic)
@@ -149,8 +152,13 @@ def render_class_analytics(course_id, users_raw, quizzes_raw, assigns_raw, submi
 
     # 5. CALCULATE GRADES (sd.py logic)
     weight_config_local = {}
-    for a in assigns_raw:
-        weight_config_local[f"assign_{a['id']}"] = {'id': a['id'], 'name': a['name'], 'type': 'assign', 'weight': 100.0}
+    if assessment_filter in ["All", "Assignments"]:
+        for a in assigns_raw:
+            weight_config_local[f"assign_{a['id']}"] = {'id': a['id'], 'name': a['name'], 'type': 'assign', 'weight': 100.0}
+    
+    if assessment_filter in ["All", "Quizzes"]:
+        for q in quizzes_raw:
+            weight_config_local[f"quiz_{q['id']}"] = {'id': q['id'], 'name': q['name'], 'type': 'quiz', 'weight': 100.0}
 
     student_results, _ = calculate_student_metrics(filtered_students_raw, weight_config_local, course_id, submission_data, quiz_attempts_raw)
     
@@ -165,7 +173,7 @@ def render_class_analytics(course_id, users_raw, quizzes_raw, assigns_raw, submi
 
     # 6. RENDER VISUALIZATIONS (Mirror sd.py)
     st.divider()
-    st.subheader("Average Grades by Assignment and Class")
+    st.subheader("Average Grades by Assessment and Class")
     
     chart_data_list = []
     for key, cfg in weight_config_local.items():
@@ -175,12 +183,12 @@ def render_class_analytics(course_id, users_raw, quizzes_raw, assigns_raw, submi
             val_col = df[raw_col].apply(lambda x: pd.to_numeric(x, errors='coerce'))
             grouped = df.groupby("grouping_name")[raw_col].apply(lambda x: pd.to_numeric(x, errors='coerce').mean()).reset_index()
             grouped.columns = ["Class", "Average Grade"]
-            grouped["Assignment"] = cfg['name']
+            grouped["Assessment"] = cfg['name']
             chart_data_list.append(grouped)
     
     if chart_data_list:
         chart_df = pd.concat(chart_data_list, ignore_index=True)
-        fig = px.bar(chart_df, x="Assignment", y="Average Grade", color="Class", barmode="group")
+        fig = px.bar(chart_df, x="Assessment", y="Average Grade", color="Class", barmode="group")
         st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Performance Statistics")
