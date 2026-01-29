@@ -241,8 +241,10 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
 
         # Save current diffs back to Redis
         if new_redis_drafts != existing_drafts:
-            redis.set_json(draft_key, new_redis_drafts)
-            st.rerun()
+            # Only rerun if the save was SUCCESSFUL (True)
+            # If Redis is down (False), we just proceed to render the UI with current in-memory changes
+            if redis.set_json(draft_key, new_redis_drafts):
+                st.rerun()
 
         # Review Pending Changes
         if changes_detected:
