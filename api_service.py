@@ -54,11 +54,47 @@ def fetch_course_metadata(course_id):
                 for assignment in subs_res.get('assignments', []):
                     a_id = assignment['assignmentid']
                     submissions[a_id] = {s['userid']: s for s in assignment.get('submissions', [])}
-            
-        return users, quizzes, assigns, submissions, quiz_attempts
+        
+        # --- Group & Grouping Data ---
+        groupings = mc.get_course_groupings(course_id) or []
+        groups = mc.get_course_groups(course_id) or []
+        
+        # Build student-group mapping: user_id -> [group_ids]
+        group_membership = {} # group_id -> [user_ids]
+        group_ids = [g['id'] for g in groups]
+        if group_ids:
+            members_list = mc.get_groups_members(group_ids) or []
+            for g_mem in members_list:
+                group_membership[g_mem['groupid']] = g_mem.get('userids', [])
+        
+        # Mapping: user_id -> list of group_ids
+        user_to_groups = {}
+        for g_id, u_ids in group_membership.items():
+            for u_id in u_ids:
+                if u_id not in user_to_groups:
+                    user_to_groups[u_id] = []
+                user_to_groups[u_id].append(g_id)
+        
+        # Get detailed groupings to know which groups belong to which grouping
+        detailed_groupings = []
+        if groupings:
+            grouping_ids = [g['id'] for g in groupings]
+            detailed_groupings = mc.get_groupings_detailed(grouping_ids) or groupings
+        
+        return {
+            'users': users,
+            'quizzes': quizzes,
+            'assigns': assigns,
+            'submissions': submissions,
+            'quiz_attempts': quiz_attempts,
+            'groups': groups,
+            'groupings': detailed_groupings,
+            'group_membership': group_membership, # group_id -> [user_ids]
+            'user_to_groups': user_to_groups     # user_id -> [group_ids]
+        }
     except Exception as e:
         st.warning(f"Failed to fetch course metadata for ID {course_id}. Error: {e}")
-        return [], [], [], {}, {}
+        return {'users': [], 'quizzes': [], 'assigns': [], 'submissions': {}, 'quiz_attempts': {}, 'groups': [], 'groupings': [], 'group_membership': {}, 'user_to_groups': {}}
 
 @st.cache_data(ttl=600)
 def fetch_user_grades_batch(course_id, user_id):
@@ -98,11 +134,12 @@ def sync_grade_to_moodle(course_id, user_id, item_id, item_type, grade_value, it
         if item_type == 'assign':
             # Use mod_assign_save_grade for assignments
             result = mc.update_assignment_grade(item_id, user_id, grade_value)
-            # mod_assign_save_grade might return {} or None on success
-            if result is None or (isinstance(result, dict) and not result.get('exception')):
+            # Moodle might return None, an empty list [], or a dict without an exception on success
+            if result is None or not isinstance(result, dict) or not result.get('exception'):
                 return True, f"Successfully updated assignment grade for user {user_id}"
             else:
-                error_msg = result.get('message', 'Unknown error') if isinstance(result, dict) else 'No response from Moodle'
+                # If it is a dict with an exception, use the message
+                error_msg = result.get('message', 'Unknown error')
                 return False, f"Failed to update grade: {error_msg}"
         elif item_type == 'quiz':
             # Use core_grades_update_grades for quiz manual override
@@ -111,11 +148,12 @@ def sync_grade_to_moodle(course_id, user_id, item_id, item_type, grade_value, it
                 return False, "Course module ID (cmid) is required for quiz grade sync"
             
             result = mc.update_quiz_grade(item_cmid, user_id, grade_value, course_id)
-            # core_grades_update_grades might return None on success
-            if result is None or (isinstance(result, dict) and not result.get('exception')):
+            # Moodle might return None, an empty list [], or a dict without an exception on success
+            if result is None or not isinstance(result, dict) or not result.get('exception'):
                 return True, f"Successfully updated quiz grade for user {user_id}"
             else:
-                error_msg = result.get('message', 'Unknown error') if isinstance(result, dict) else 'No response from Moodle'
+                # If it is a dict with an exception, use the message
+                error_msg = result.get('message', 'Unknown error')
                 return False, f"Failed to update quiz grade: {error_msg}"
         else:
             return False, f"Unknown item type: {item_type}"

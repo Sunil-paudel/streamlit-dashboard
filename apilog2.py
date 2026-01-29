@@ -19,6 +19,8 @@
 # ========================================================================================
 
 import streamlit as st
+from components.results import render_detailed_results
+from components.details import render_student_details
 import pandas as pd
 import numpy as np
 import os
@@ -109,7 +111,18 @@ coord_email_input = st.sidebar.text_input("Coordinator Email", value=COORD_EMAIL
 st.sidebar.markdown("---")
 st.sidebar.subheader("Assessment Weight Setup")
 
-users_raw, quizzes_raw, assigns_raw, submission_data, quiz_attempts_raw = fetch_course_metadata(course_id)
+metadata = fetch_course_metadata(course_id)
+users_raw = metadata['users']
+quizzes_raw = metadata['quizzes']
+assigns_raw = metadata['assigns']
+submission_data = metadata['submissions']
+quiz_attempts_raw = metadata['quiz_attempts']
+group_mapping = {
+    'user_to_groups': metadata['user_to_groups'],
+    'group_membership': metadata['group_membership'],
+    'groups': metadata['groups'],
+    'groupings': metadata['groupings']
+}
 weight_config = {}
 total_target = 0
 
@@ -125,7 +138,8 @@ with st.sidebar.expander("Set Assessment Weights", expanded=True):
                 'type': 'quiz', 
                 'name': q['name'],
                 'duedate': q.get('timeclose', 0),
-                'visible': q.get('visible', 1)
+                'visible': q.get('visible', 1),
+                'grademax': float(q.get('grade', 100.0))
             }
             total_target += w
     for a in assigns_raw:
@@ -138,11 +152,21 @@ with st.sidebar.expander("Set Assessment Weights", expanded=True):
                 'type': 'assign', 
                 'name': a['name'],
                 'duedate': a.get('duedate', 0),
-                'visible': a.get('visible', 1)
+                'visible': a.get('visible', 1),
+                'grademax': float(a.get('grade', 100.0)),
+                'teamsubmission': a.get('teamsubmission', 0),
+                'groupingid': a.get('groupingid', 0)
             }
             total_target += w
 
 st.sidebar.metric("Target Final Mark", f"{total_target:.2f} pts")
+
+with st.sidebar.expander("Moodle Metadata Debug"):
+    for k, v in weight_config.items():
+        st.write(f"**{v['name']}**")
+        st.write(f"- Moodle ID: {v['id']}")
+        st.write(f"- Moodle Max Grade: {v.get('grademax', 'N/A')}")
+        st.write(f"- Sidebar Weight: {v['weight']}")
 st.sidebar.subheader("Risk Formula Setup")
 with st.sidebar.expander("Customize Weights", expanded=False):
     st.info("Adjust the components that determine student risk.")
@@ -313,56 +337,7 @@ elif choice == "Risk Scatter":
 
 # ---------- View: Student Details ----------
 elif choice == "Student Details":
-
-    if not df.empty:
-        lookup = st.selectbox("Select Student", df['Name'].sort_values().unique())
-        
-        if lookup:
-            subset = df[df['Name']==lookup]
-            if not subset.empty:
-                s = subset.iloc[0]
-                st.markdown(f"### Student: {s['Name']}")
-                col1, col2, col3, col4, col5 = st.columns(5)
-                col1.metric("Final Mark", f"{int(s['Final_Mark'])} / {int(total_target)}")
-
-                col2.metric("Engagement", f"{s['Engagement_Score']:.2f}%")
-                col3.metric("Clicks / Week", f"{s.get('Clicks_Per_Week', 0.0):.2f}")
-                col4.metric(f"Total Clicks ({log_window_days}d)", f"{int(s.get('Clicks', 0))}")
-                col5.metric(f"Dwell Hours ({log_window_days}d)", f"{s.get('Dwell_Hours', 0.0):.2f}h")
-                st.markdown(f"**Last Active:** {int(s['Days_Since_Last'])} days ago | **Risk Score:** {s['Risk_Score']:.2f} ({s['Risk_Category']})")
-
-                breakdown = []
-                for k,v in weight_config.items():
-                    pts = s.get(f"pts_{k}", 0)
-                    is_overdue = s.get(f"overdue_{k}", False)
-                    is_inprogress = s.get(f"inprogress_{k}", False)
-                    is_viewed = s.get(f"viewed_{k}", False)
-                    
-                    if pts > 0:
-                        status_icon = "Complete"
-                    elif is_overdue:
-                        status_icon = "Overdue"
-                    elif is_inprogress or is_viewed:
-                        status_icon = "Active"
-                    else:
-                        status_icon = "Pending"
-
-                    breakdown.append({
-                        "Assessment": v['name'],
-                        "Due Date": s.get(f"due_{k}", "N/A"),
-                        "Raw": s.get(f"raw_{k}", 0),
-                        "Points": pts,
-                        "Max": s.get(f"max_{k}", v['weight']),
-                        "Timing": s.get(f"timing_{k}", "N/A"),
-                        "Status": status_icon
-                    })
-                st.table(pd.DataFrame(breakdown))
-            else:
-                st.warning("Student data not found.")
-        else:
-            st.info("No students available to display.")
-    else:
-         st.info("No data available.")
+    render_student_details(df, total_target, weight_config, log_window_days, group_mapping=group_mapping)
 
 # ---------- View: Class Analysis ----------
 elif choice == "Class Analysis":
@@ -377,152 +352,7 @@ elif choice == "Outreach":
 
 # ---------- View: Detailed Results ----------
 elif choice == "Detailed Results":
-
-    st.markdown("### Student Detailed Performance (Editable)")
-    st.info("Edit assessment scores below and click 'Push to Moodle' to sync changes.")
-
-    if df.empty:
-        st.info("No data.")
-    else:
-        # Initialize session state for tracking changes
-        if 'grade_changes' not in st.session_state:
-            st.session_state.grade_changes = {}
-        
-        detailed_list = []
-        for _, u in df.iterrows():
-            row = {
-                "User_ID": u['User_ID'],
-                "Name": u['Name'],
-                "Email": u['Email'],
-                "Score": f"{u['Final_Mark']:.2f} / {total_target:.2f}",
-                "Clicks": int(u.get('Clicks', 0)),
-                "Dwell_Hours": round(u.get('Dwell_Hours', 0), 2),
-                "Days_Since_Last": int(u.get('Days_Since_Last', 0)),
-                "Status": u.get('Status', 'N/A'),
-            }
-
-            # Add individual assessment as percentage
-            for k, cfg in weight_config.items():
-                r = u.get(f"raw_{k}", 0.0)
-                # Use the 'max' column computed during metrics calculation
-                m = u.get(f"max_{k}", cfg['weight']) or cfg['weight']
-                perc = (r / m * 100) if m > 0 else 0
-                row[f"{cfg['name']} (%)"] = round(perc, 2)
-            
-            # Add adjustment reason column
-            row["Adjustment Reason"] = ""
-
-            detailed_list.append(row)
-
-        detailed_df = pd.DataFrame(detailed_list)
-        
-        # Make assessment columns editable
-        editable_cols = [col for col in detailed_df.columns if col.endswith(" (%)")]
-        disabled_cols = [col for col in detailed_df.columns if col not in editable_cols and col != "Adjustment Reason"]
-
-        # Display editable table
-        edited_df = st.data_editor(
-            detailed_df,
-            disabled=disabled_cols,
-            hide_index=True,
-            use_container_width=True,
-            key="detailed_results_editor"
-        )
-
-        # Detect changes
-        changes_detected = []
-        for idx, (orig_row, edit_row) in enumerate(zip(detailed_df.iterrows(), edited_df.iterrows())):
-            orig_data = orig_row[1]
-            edit_data = edit_row[1]
-            
-            for col in editable_cols:
-                if abs(orig_data[col] - edit_data[col]) > 0.01:  # Tolerance for floating point
-                    # Extract assessment key from column name
-                    assessment_name = col.replace(" (%)", "")
-                    # Find the corresponding key in weight_config
-                    item_key = None
-                    for k, cfg in weight_config.items():
-                        if cfg['name'] == assessment_name:
-                            item_key = k
-                            break
-                    
-                    if item_key:
-                        item_cmid = weight_config[item_key].get('cmid')
-                        
-                        changes_detected.append({
-                            'user_id': edit_data['User_ID'],
-                            'name': edit_data['Name'],
-                            'item_key': item_key,
-                            'item_name': assessment_name,
-                            'item_type': weight_config[item_key]['type'],
-                            'item_id': weight_config[item_key]['id'],
-                            'item_cmid': item_cmid,
-                            'old_perc': orig_data[col],
-                            'new_perc': edit_data[col],
-                            'max_points': weight_config[item_key]['weight'],
-                            'reason': edit_data.get('Adjustment Reason', '')
-                        })
-
-        # Review Pending Changes
-        if changes_detected:
-            with st.expander(f"Review Pending Changes ({len(changes_detected)} modifications)", expanded=True):
-                for change in changes_detected:
-                    st.markdown(f"""
-                    **{change['name']}** - {change['item_name']}:
-                    - Old: {change['old_perc']:.2f}% -> New: {change['new_perc']:.2f}%
-                    - Reason: {change['reason'] if change['reason'] else '_No reason provided_'}
-                    """)
-            
-            # Push to Moodle button
-            st.markdown("---")
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.warning("Warning: This will update grades in your Moodle Gradebook. Make sure you have reviewed all changes above.")
-            with col2:
-                if st.button("Push to Moodle", type="primary"):
-                    from api_service import sync_grade_to_moodle
-                    
-                    success_count = 0
-                    fail_count = 0
-                    
-                    with st.spinner("Syncing grades to Moodle..."):
-                        for change in changes_detected:
-                            # Convert percentage back to raw score
-                            new_raw = (change['new_perc'] / 100) * change['max_points']
-                            
-                            # Sync both assignments and quizzes
-                            success, message = sync_grade_to_moodle(
-                                course_id=course_id,
-                                user_id=change['user_id'],
-                                item_id=change['item_id'],
-                                item_type=change['item_type'],
-                                grade_value=new_raw,
-                                item_cmid=change.get('item_cmid')
-                            )
-                            
-                            if success:
-                                st.success(f"{change['name']} - {change['item_name']}: {message}")
-                                success_count += 1
-                            else:
-                                st.error(f"{change['name']} - {change['item_name']}: {message}")
-                                fail_count += 1
-                    
-                    st.info(f"Sync complete: {success_count} successful, {fail_count} failed/skipped")
-                    
-                    # Clear cache to refresh data
-                    if success_count > 0:
-                        st.cache_data.clear()
-                        st.info("Refresh the page to see updated grades from Moodle.")
-
-        # CSV download
-        st.markdown("---")
-        csv = edited_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Detailed Results CSV (with adjustments)",
-            data=csv,
-            file_name="student_detailed_results_edited.csv",
-            mime="text/csv"
-        )
+    render_detailed_results(df, total_target, weight_config, course_id, group_mapping=group_mapping)
 
 
 st.divider()

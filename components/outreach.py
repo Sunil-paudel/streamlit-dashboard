@@ -120,6 +120,14 @@ def render_outreach(df, weight_config, coord_email):
         "Days_Since_Last"
     ]
 
+    # Add raw grade columns for all assessments
+    for key, cfg in weight_config.items():
+        grademax = cfg.get('grademax', 100.0)
+        col_name = f"{cfg['name']} ({grademax})"
+        cols.append(col_name)
+        # Create display columns from raw data
+        df[col_name] = df[f"raw_{key}"].fillna(0).round(2)
+
     targets = df[final_mask][cols].copy()
 
     st.markdown(f"### Targets ({filter_desc})")
@@ -133,7 +141,9 @@ def render_outreach(df, weight_config, coord_email):
     edited = st.data_editor(
         targets,
         column_config={
-            "Select": st.column_config.CheckboxColumn("Contact?", default=True)
+            "Select": st.column_config.CheckboxColumn("Contact?", default=True),
+            "Risk_Score": st.column_config.NumberColumn("Risk (%)", format="%.2f"),
+            **{f"{cfg['name']} ({cfg.get('grademax', 100.0)})": st.column_config.NumberColumn(f"{cfg['name']}") for key, cfg in weight_config.items()}
         },
         disabled=cols,
         hide_index=True

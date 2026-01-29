@@ -84,21 +84,39 @@ def calculate_student_metrics(users_raw, weight_config, course_id, submission_da
                     g_inst = g.get('iteminstance')
                     g_name = (g.get('itemname') or '').lower().strip()
                     g_module = g.get('itemmodule') or ''
+                    g_type = g.get('itemtype')
 
-                    if g_module != 'assign':
+                    if g_module != 'assign' or g_type != 'mod':
                         continue
 
                     # Match by ID
                     if g_inst and int(g_inst) == config['id']:
-                        r_ob = float(g.get('graderaw') if g.get('graderaw') is not None else 0.0)
-                        m_ob = float(g.get('grademax') if (g.get('grademax') is not None and float(g.get('grademax')) > 0) else 100.0)
+                        report_raw = float(g.get('graderaw') if g.get('graderaw') is not None else 0.0)
+                        report_max = float(g.get('grademax') if (g.get('grademax') is not None and float(g.get('grademax')) > 0) else config.get('grademax', 100.0))
+                        native_max = float(config.get('grademax', 100.0))
+                        
+                        # Normalize to native scale if Moodle Gradebook has scaled it
+                        if report_max > 0 and abs(report_max - native_max) > 0.001:
+                            r_ob = (report_raw / report_max) * native_max
+                        else:
+                            r_ob = report_raw
+                        m_ob = native_max
+                        
                         matched_grade_id = g_id
                         break
 
                     # Exact name match
                     elif g_name == config['name'].lower().strip():
-                        r_ob = float(g.get('graderaw') if g.get('graderaw') is not None else 0.0)
-                        m_ob = float(g.get('grademax') if (g.get('grademax') is not None and float(g.get('grademax')) > 0) else 100.0)
+                        report_raw = float(g.get('graderaw') if g.get('graderaw') is not None else 0.0)
+                        report_max = float(g.get('grademax') if (g.get('grademax') is not None and float(g.get('grademax')) > 0) else config.get('grademax', 100.0))
+                        native_max = float(config.get('grademax', 100.0))
+                        
+                        if report_max > 0 and abs(report_max - native_max) > 0.001:
+                            r_ob = (report_raw / report_max) * native_max
+                        else:
+                            r_ob = report_raw
+                        m_ob = native_max
+                        
                         matched_grade_id = g_id
                         break
 
@@ -122,10 +140,10 @@ def calculate_student_metrics(users_raw, weight_config, course_id, submission_da
                 row[f"viewed_{key}"] = is_viewed
 
                 if r_ob == 0.0:
-                    # If no grade found or grade is 0, use weight as the denominator for gaps
+                    # If no grade found or grade is 0, use grademax as the denominator for gaps
                     # but only if it's actually overdue or we need a denominator
                     if m_ob <= 0:
-                        m_ob = config['weight']
+                        m_ob = config.get('grademax', 100.0)
                     
                     if is_overdue:
                         row['Assignments_Gap'] += 1
@@ -145,21 +163,37 @@ def calculate_student_metrics(users_raw, weight_config, course_id, submission_da
                     g_inst = g.get('iteminstance')
                     g_name = (g.get('itemname') or '').lower().strip()
                     g_module = g.get('itemmodule') or ''
-                    if g_module != 'quiz':
+                    g_type = g.get('itemtype')
+                    if g_module != 'quiz' or g_type != 'mod':
                         continue
 
                     # Match by ID
                     if g_inst and int(g_inst) == config['id']:
-                        r_ob = float(g.get('graderaw') if g.get('graderaw') is not None else 0.0)
-                        # Ensure we get the actual maximum possible raw grade for accurate normalization
-                        m_ob = float(g.get('grademax') if (g.get('grademax') is not None and float(g.get('grademax')) > 0) else config['weight'])
+                        report_raw = float(g.get('graderaw') if g.get('graderaw') is not None else 0.0)
+                        report_max = float(g.get('grademax') if (g.get('grademax') is not None and float(g.get('grademax')) > 0) else config.get('grademax', 100.0))
+                        native_max = float(config.get('grademax', 100.0))
+                        
+                        if report_max > 0 and abs(report_max - native_max) > 0.001:
+                            r_ob = (report_raw / report_max) * native_max
+                        else:
+                            r_ob = report_raw
+                        m_ob = native_max
+                        
                         matched_grade_id = g.get('id')
                         break
 
                     # Name match
                     elif g_name == config['name'].lower().strip():
-                        r_ob = float(g.get('graderaw') if g.get('graderaw') is not None else 0.0)
-                        m_ob = float(g.get('grademax') if (g.get('grademax') is not None and float(g.get('grademax')) > 0) else config['weight'])
+                        report_raw = float(g.get('graderaw') if g.get('graderaw') is not None else 0.0)
+                        report_max = float(g.get('grademax') if (g.get('grademax') is not None and float(g.get('grademax')) > 0) else config.get('grademax', 100.0))
+                        native_max = float(config.get('grademax', 100.0))
+                        
+                        if report_max > 0 and abs(report_max - native_max) > 0.001:
+                            r_ob = (report_raw / report_max) * native_max
+                        else:
+                            r_ob = report_raw
+                        m_ob = native_max
+                        
                         matched_grade_id = g.get('id')
                         break
 
@@ -193,16 +227,16 @@ def calculate_student_metrics(users_raw, weight_config, course_id, submission_da
                 row[f"viewed_{key}"] = is_viewed
 
                 if r_ob == 0.0:
-                    # If we have no grade, the denominator for the risk pool should be the weight
+                    # If we have no grade, the denominator for the risk pool should be the actual max grade
                     if m_ob <= 0:
-                        m_ob = config['weight']
+                        m_ob = config.get('grademax', 100.0)
                     
                     if is_overdue:
                         row['Quizzes_Gap'] += 1
                 else:
                     # If we HAVE a grade, but grademax is missing or 0 (prevent div by zero)
                     if m_ob <= 0:
-                        m_ob = config['weight']
+                        m_ob = config.get('grademax', 100.0)
 
             # Weighted points
             pts_ob = (r_ob / m_ob * config['weight']) if m_ob > 0 else 0.0

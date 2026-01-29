@@ -191,6 +191,15 @@ def get_groups_members(groupids):
         return results
     return res if isinstance(res, list) else []
 
+@st.cache_data(ttl=300)
+def get_course_user_groups(courseid, userids=None):
+    """Get all groups for users in a course. Returns a list of groups per user."""
+    params = {"courseid": courseid}
+    if userids:
+        for i, uid in enumerate(userids):
+            params[f"userids[{i}]"] = uid
+    return moodle_call("core_group_get_course_user_groups", params)
+
 def update_assignment_grade(assignment_id, user_id, grade):
     """
     Updates a student's grade for an assignment using mod_assign_save_grade.
