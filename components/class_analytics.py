@@ -194,8 +194,27 @@ def render_class_analytics(course_id, users_raw, quizzes_raw, assigns_raw, submi
     
     if chart_data_list:
         chart_df = pd.concat(chart_data_list, ignore_index=True)
-        fig = px.bar(chart_df, x="Assessment", y="Average Grade", color="Class", barmode="group")
+        fig = px.bar(chart_df, x="Assessment", y="Average Grade", color="Class", barmode="group", title="Average Grades by Assessment and Class")
         st.plotly_chart(fig, use_container_width=True)
+        
+        # New: Grade Distribution Box Plot
+        st.subheader("Grade Distribution (Box Plot)")
+        st.info("Box plots show the spread of marks: the box is the inner 50%, with the median line inside.")
+        
+        # We need raw data for the box plot, not averages
+        box_data_list = []
+        for key, cfg in weight_config_local.items():
+            raw_col = f"raw_{key}"
+            if raw_col in df.columns:
+                temp_df = df[[raw_col, "grouping_name"]].copy()
+                temp_df.columns = ["Mark", "Class"]
+                temp_df["Assessment"] = cfg['name']
+                box_data_list.append(temp_df)
+        
+        if box_data_list:
+            box_df = pd.concat(box_data_list, ignore_index=True)
+            fig_box = px.box(box_df, x="Assessment", y="Mark", color="Class", title="Grade Spread by Assessment")
+            st.plotly_chart(fig_box, use_container_width=True)
 
     st.subheader("Performance Statistics")
     stats = df.groupby("grouping_name").agg({

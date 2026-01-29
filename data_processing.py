@@ -465,3 +465,64 @@ def calculate_risk_scores(df, weight_config, formula_config=None):
 
     df['Risk_Category'] = df.apply(determine_risk_category, axis=1)
     return df
+
+def aggregate_weekly_activity(log_file, users_raw, start_date=None, end_date=None):
+    """
+    Parses logs to compute total clicks per week across the entire class.
+    Returns a DataFrame suitable for a line chart (Date, Clicks).
+    """
+    if not log_file:
+        return pd.DataFrame()
+
+    try:
+        # Read logs (lightweight read)
+        log_file.seek(0)
+        logs = pd.read_csv(log_file, on_bad_lines='skip', engine='python', encoding='utf-8')
+        log_file.seek(0) # Reset pointer
+        
+        time_c = next((c for c in logs.columns if 'time' in c.lower()), None)
+        name_c = next((c for c in logs.columns if 'name' in c.lower()), None)
+        
+        if not time_c or not name_c:
+            return pd.DataFrame()
+
+        logs[time_c] = pd.to_datetime(logs[time_c], errors='coerce', dayfirst=True, format='mixed')
+        logs = logs.dropna(subset=[time_c])
+        
+        # Filter by Date Range
+        if start_date:
+            logs = logs[logs[time_c] >= pd.to_datetime(start_date)]
+        if end_date:
+             # Extend to end of day
+            end_d = pd.to_datetime(end_date) + pd.Timedelta(hours=23, minutes=59, seconds=59)
+            logs = logs[logs[time_c] <= end_d]
+
+        # Filter Enrolled Students Only (exclude staff/guests)
+        staff_roles = ['teacher', 'editingteacher', 'manager', 'coursecreator', 'staff', 'grader', 'admin', 'administrator']
+        student_names = set()
+        for u in users_raw:
+            u_roles = []
+            for r in u.get('roles', []):
+                if r.get('shortname'): u_roles.append(r['shortname'].lower())
+                if r.get('name'): u_roles.append(r['name'].lower())
+            
+            if not any(role in staff_roles for role in u_roles):
+                student_names.add(u['fullname'].lower())
+
+        logs['Name_LC'] = logs[name_c].str.lower().str.strip()
+        student_logs = logs[logs['Name_LC'].isin(student_names)]
+        
+        if student_logs.empty:
+            return pd.DataFrame()
+
+        # Resample by Week (Mon-Sun)
+        # Set index to time
+        student_logs = student_logs.set_index(time_c)
+        weekly_stats = student_logs.resample('W-MON').size().reset_index(name='Clicks')
+        weekly_stats.columns = ['Week', 'Clicks']
+        
+        return weekly_stats
+
+    except Exception as e:
+        # print(f"Error aggregating weekly logs: {e}")
+        return pd.DataFrame()

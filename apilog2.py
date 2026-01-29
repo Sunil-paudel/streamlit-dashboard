@@ -30,7 +30,7 @@ from datetime import datetime
 from config import COORD_EMAIL
 from utils import send_automated_email
 from api_service import fetch_all_courses, fetch_course_metadata, is_api_ready, clear_course_cache
-from data_processing import calculate_student_metrics, process_logs_and_merge, calculate_risk_scores, get_log_date_range
+from data_processing import calculate_student_metrics, process_logs_and_merge, calculate_risk_scores, get_log_date_range, aggregate_weekly_activity
 import plotly.express as px
 from components.class_analytics import render_class_analytics
 from components.outreach import render_outreach
@@ -358,7 +358,7 @@ if choice == "Overview":
                 color='Category',
                 color_discrete_map=color_map,
                 hole=0.4,
-                title="Class Risk Distribution"
+                title="Course Risk Distribution"
             )
             fig_donut.update_traces(textinfo='percent+label', textposition='inside')
             fig_donut.update_layout(showlegend=False, margin=dict(t=30, b=0, l=0, r=0), height=300)
@@ -379,6 +379,23 @@ if choice == "Overview":
             m4.metric("Avg Risk Score", f"{df['Risk_Score'].mean():.2f}%")
         else:
              m4.metric("Avg Risk Score", "0.00%")
+             
+    # --- Weekly Activity Trend ---
+    st.markdown("### 📈 Weekly Activity Trend")
+    weekly_df = aggregate_weekly_activity(log_file, users_raw, start_date=start_date, end_date=end_date)
+    
+    if not weekly_df.empty:
+        fig_trend = px.line(
+            weekly_df, 
+            x='Week', 
+            y='Clicks', 
+            title="Class Engagement Over Time (Total Clicks per Week)",
+            markers=True
+        )
+        fig_trend.update_layout(height=350, margin=dict(t=40, b=0, l=0, r=0))
+        st.plotly_chart(fig_trend, use_container_width=True)
+    else:
+        st.info("Upload logs to see the weekly engagement trend.")
 
 # ---------- View: Risk Scatter ----------
 # ---------- View: Risk Radar (Advanced) ----------
