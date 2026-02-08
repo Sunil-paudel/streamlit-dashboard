@@ -36,13 +36,17 @@ def render_student_details(df, total_target, weight_config, log_window_days, gro
                     is_viewed = s.get(f"viewed_{k}", False)
                     
                     if pts > 0:
-                        status_icon = "Complete"
+                        status_icon = "✅ Complete"
                     elif is_overdue:
-                        status_icon = "Overdue"
+                        # Differentiate based on type
+                        if v.get('type') == 'quiz':
+                             status_icon = "❌ Missing"
+                        else:
+                             status_icon = "⏰ Overdue"
                     elif is_inprogress or is_viewed:
-                        status_icon = "Active"
+                        status_icon = "⏳ Active"
                     else:
-                        status_icon = "Pending"
+                        status_icon = "⚪ Pending"
 
                     raw_val = s.get(f"raw_{k}", 0)
                     max_val = s.get(f"max_{k}", v.get('grademax', 100.0))

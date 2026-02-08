@@ -24,6 +24,113 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
         # Pre-resolve student names for propagation lookups
         uid_to_name = {str(u['id']): u['fullname'] for u in metadata.get('users', [])} if metadata else {}
         
+        # --- Batch Grading & Statistics UI ---
+        with st.expander("📊 Batch Grading & Statistics", expanded=True):
+            st.caption("View class statistics and apply standard distribution dosing (Mean/Median) to selected students.")
+            
+            # 1. Select Assessment
+            assess_opts = {cfg['name']: k for k, cfg in weight_config.items()}
+            col_sel_ass, col_stats = st.columns([1, 2])
+            
+            with col_sel_ass:
+                selected_assess_name = st.selectbox("Select Assessment for Distribution", options=list(assess_opts.keys()))
+                sel_key = assess_opts.get(selected_assess_name)
+                
+            # 2. Calculate Statistics (Respecting filters from df)
+            mean_val = 0.0
+            median_val = 0.0
+            max_val = 100.0
+            
+            if sel_key:
+                raw_col = f"raw_{sel_key}"
+                max_val = weight_config.get(sel_key, {}).get('grademax', 100.0)
+                if raw_col in df.columns:
+                    # Filter out NaN/0 if desired? For now, include all rows in DF (which are already filtered by sidebars)
+                    valid_series = df[raw_col].dropna()
+                    if not valid_series.empty:
+                        mean_val = valid_series.mean()
+                        median_val = valid_series.median()
+            
+            with col_stats:
+                m_col1, m_col2 = st.columns(2)
+                m_col1.metric("Class Mean", f"{mean_val:.2f}", delta=None)
+                m_col2.metric("Class Median", f"{median_val:.2f}", delta=None)
+            
+            # --- Grade Range Filter ---
+            filter_min_val, filter_max_val = st.slider(
+                "Filter Students by Current Mark Range",
+                min_value=0.0,
+                max_value=float(max_val),
+                value=(0.0, float(max_val)),
+                step=1.0,
+                help="Only students with current marks in this range will appear in the selection list below."
+            )
+            
+            st.divider()
+            
+            # 3. Student Selection & Application
+            # Filter student options based on the slider
+            filtered_student_options = {}
+            if sel_key:
+                raw_col = f"raw_{sel_key}"
+                if raw_col in df.columns:
+                    for _, row in df.iterrows():
+                        mark = row.get(raw_col, 0.0)
+                        if pd.isna(mark): mark = 0.0
+                        if filter_min_val <= mark <= filter_max_val:
+                            label = f"{row['User_ID']} - {row['Name']} ({mark:.1f})"
+                            filtered_student_options[label] = row['User_ID']
+                else:
+                    # Fallback if column missing
+                    filtered_student_options = {f"{u['User_ID']} - {u['Name']}": u['User_ID'] for _, u in df.iterrows()}
+            else:
+                 filtered_student_options = {f"{u['User_ID']} - {u['Name']}": u['User_ID'] for _, u in df.iterrows()}
+
+            st.caption(f"Showing {len(filtered_student_options)} of {len(df)} students in range [{filter_min_val}, {filter_max_val}]")
+            
+            # Alias for downstream compatibility
+            student_options = filtered_student_options
+            
+            selected_students_labels = st.multiselect("Select Students to Grade", options=list(student_options.keys()))
+            
+            c_apply_1, c_apply_2, c_apply_3, c_custom = st.columns([1, 1, 1, 1])
+            
+            selected_val_to_apply = None
+            
+            with c_apply_1:
+                if st.button(f"Apply Mean ({mean_val:.1f})"):
+                    selected_val_to_apply = mean_val
+            with c_apply_2:
+                if st.button(f"Apply Median ({median_val:.1f})"):
+                    selected_val_to_apply = median_val
+            
+            with c_custom:
+                custom_val = st.number_input("Custom Value", min_value=0.0, max_value=float(max_val), step=1.0, key="custom_batch_val")
+            with c_apply_3:
+                 if st.button("Apply Custom"):
+                     selected_val_to_apply = custom_val
+
+            # Logic to Apply to Drafts
+            if selected_val_to_apply is not None:
+                if not selected_students_labels:
+                    st.warning("Please select at least one student.")
+                else:
+                    if course_id not in st.session_state: st.session_state['temp_trigger'] = True # Dummy
+                    
+                    # Update Redis Drafts
+                    current_redis = redis.get_json(draft_key) or {}
+                    
+                    count = 0
+                    for label in selected_students_labels:
+                        uid = str(student_options[label])
+                        if uid not in current_redis: current_redis[uid] = {}
+                        current_redis[uid][sel_key] = float(selected_val_to_apply)
+                        count += 1
+                        
+                    if redis.set_json(draft_key, current_redis):
+                        st.success(f"Applied {selected_val_to_apply:.2f} to {count} students.")
+                        st.rerun()
+        
         # Pre-calculate unique headers to prevent stacking if names are identical
         header_mapping = {} # key -> unique_header
         name_counts = {}
@@ -59,6 +166,18 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
             g_names = [group_id_to_name.get(str(gid), "Unknown") for gid in u_groups]
             gp_names = list(set([group_to_grouping.get(str(gid), "No Class") for gid in u_groups]))
             
+            # Determine Status Visuals
+            raw_status = u.get('Status', 'N/A')
+            status_display = raw_status
+            if raw_status == 'At Risk':
+                status_display = "🔴 At Risk"
+            elif raw_status == 'Warning':
+                status_display = "🟠 Warning"
+            elif raw_status == 'On Track':
+                status_display = "🟢 On Track"
+            elif raw_status == 'MVP' or raw_status == 'High Performer':
+                status_display = "🌟 High Performer"
+
             row = {
                 "User_ID": u['User_ID'],
                 "Name": u['Name'],
@@ -69,7 +188,7 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
                 "Clicks": int(u.get('Clicks', 0)),
                 "Dwell_Hours": round(u.get('Dwell_Hours', 0), 2),
                 "Days_Since_Last": int(u.get('Days_Since_Last', 0)),
-                "Status": u.get('Status', 'N/A'),
+                "Status": status_display, # Visual Status
             }
 
             # Add individual assessment as Raw Score

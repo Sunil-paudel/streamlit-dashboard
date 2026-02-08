@@ -169,7 +169,7 @@ def fetch_completion_status(course_id, user_id):
     except:
         return []
 
-def sync_grade_to_moodle(course_id, user_id, item_id, item_type, grade_value, item_cmid=None, apply_to_all=False):
+def sync_grade_to_moodle(course_id, user_id, item_id, item_type, grade_value, item_cmid=None, apply_to_all=False, max_grade=100.0):
     """
     Syncs a manually adjusted grade to Moodle.
     
@@ -181,11 +181,17 @@ def sync_grade_to_moodle(course_id, user_id, item_id, item_type, grade_value, it
         grade_value: The raw grade value (not percentage)
         item_cmid: The course module ID (required for quizzes)
         apply_to_all: If True, applies to all members of the user's group (assignments only)
+        max_grade: The maximum allowed grade for this item
     
     Returns:
         (success: bool, message: str)
     """
     try:
+        # Clamp grade to max_grade to prevent DML errors
+        if float(grade_value) > float(max_grade):
+             grade_value = float(max_grade)
+             # st.write(f"⚠️ Grade clamped to max {max_grade}")
+
         if item_type == 'assign':
             # Use mod_assign_save_grade for assignments
             moodle_apply = 1 if apply_to_all else 0
