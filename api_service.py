@@ -18,21 +18,11 @@
 import streamlit as st
 import pandas as pd
 import moodle_client as mc
-from redis_client import get_redis, PREFIX_CACHE
-
-redis = get_redis()
 
 def clear_course_cache(course_id):
     """Clears all caches for a specific course to force a fresh fetch."""
     # 1. Clear Streamlit cache
     st.cache_data.clear()
-    
-    # 2. Clear Redis cache
-    cache_key = f"{PREFIX_CACHE}metadata:{course_id}"
-    redis.delete(cache_key)
-    
-    # Also clear all courses if needed, or specific patterns
-    # redis.delete(f"{PREFIX_CACHE}all_courses")
     
     return True
 
@@ -42,14 +32,12 @@ def is_api_ready():
 @st.cache_data(ttl=3600)
 def fetch_all_courses():
     try:
-        # Check Redis first
-        cache_key = f"{PREFIX_CACHE}all_courses"
-        cached = redis.get_json(cache_key)
-        if cached: return pd.DataFrame(cached)
-        
         courses = mc.get_courses()
-        if courses:
-            redis.set_json(cache_key, courses, ex=3600)
+        if isinstance(courses, dict) and courses.get('exception'):
+            return pd.DataFrame()
+        if not isinstance(courses, list):
+            return pd.DataFrame()
+            
         return pd.DataFrame(courses)
     except:
         return pd.DataFrame()
@@ -57,12 +45,19 @@ def fetch_all_courses():
 @st.cache_data(ttl=1800)
 def fetch_course_metadata(course_id):
     try:
-        # Check Redis Cache
-        cache_key = f"{PREFIX_CACHE}metadata:{course_id}"
-        cached = redis.get_json(cache_key)
-        if cached: return cached
 
-        users = mc.get_enrolled_users(course_id) or []
+        users = mc.get_enrolled_users(course_id)
+        
+        # Check for Moodle Exception or Error Code
+        if isinstance(users, dict):
+            if users.get('exception') or users.get('errorcode'):
+                users = []
+        elif not isinstance(users, list):
+            users = []
+            
+        # Fail Fast: If users list is empty, assume token/course error and stop.
+        if not users:
+             return {'users': [], 'quizzes': [], 'assigns': [], 'submissions': {}, 'quiz_attempts': {}, 'groups': [], 'groupings': [], 'group_membership': {}, 'user_to_groups': {}}
         
         quizzes_res = mc.get_quizzes_by_courses(course_id) or {}
         quizzes = quizzes_res.get('quizzes', [])
@@ -150,8 +145,6 @@ def fetch_course_metadata(course_id):
             'user_to_groups': user_to_groups
         }
         
-        # Cache in Redis
-        redis.set_json(cache_key, metadata, ex=1800)
         return metadata
     except Exception as e:
         st.warning(f"Failed to fetch course metadata for ID {course_id}. Error: {e}")
