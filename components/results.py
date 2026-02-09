@@ -2,9 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from api_service import sync_grade_to_moodle
-from redis_client import get_redis, PREFIX_DRAFT
-
-redis = get_redis()
 
 def render_detailed_results(df, total_target, weight_config, course_id, group_mapping=None, metadata=None, moodle_baseline=None):
     """
@@ -17,9 +14,13 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
     if df.empty:
         st.info("No data.")
     else:
-        # --- Redis Draft Loading ---
-        draft_key = f"{PREFIX_DRAFT}{course_id}"
-        existing_drafts = redis.get_json(draft_key) or {} # user_id -> {item_key: val}
+        # --- Session State Draft Loading ---
+        # Initialize drafts_by_course if not exists
+        if 'drafts_by_course' not in st.session_state:
+            st.session_state['drafts_by_course'] = {}
+        
+        # Get existing drafts for this course
+        existing_drafts = st.session_state['drafts_by_course'].get(course_id, {})
         
         # Pre-resolve student names for propagation lookups
         uid_to_name = {str(u['id']): u['fullname'] for u in metadata.get('users', [])} if metadata else {}
@@ -115,21 +116,22 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
                 if not selected_students_labels:
                     st.warning("Please select at least one student.")
                 else:
-                    if course_id not in st.session_state: st.session_state['temp_trigger'] = True # Dummy
+                    # Update Session State Drafts
+                    if course_id not in st.session_state['drafts_by_course']:
+                        st.session_state['drafts_by_course'][course_id] = {}
                     
-                    # Update Redis Drafts
-                    current_redis = redis.get_json(draft_key) or {}
+                    current_drafts = st.session_state['drafts_by_course'][course_id]
                     
                     count = 0
                     for label in selected_students_labels:
                         uid = str(student_options[label])
-                        if uid not in current_redis: current_redis[uid] = {}
-                        current_redis[uid][sel_key] = float(selected_val_to_apply)
+                        if uid not in current_drafts:
+                            current_drafts[uid] = {}
+                        current_drafts[uid][sel_key] = float(selected_val_to_apply)
                         count += 1
-                        
-                    if redis.set_json(draft_key, current_redis):
-                        st.success(f"Applied {selected_val_to_apply:.2f} to {count} students.")
-                        st.rerun()
+                    
+                    st.success(f"Applied {selected_val_to_apply:.2f} to {count} students.")
+                    st.rerun()
         
         # Pre-calculate unique headers to prevent stacking if names are identical
         header_mapping = {} # key -> unique_header
@@ -233,9 +235,9 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
             for k in weight_config.keys():
                 moodle_vals[uid][k] = float(u.get(f"raw_{k}", 0.0))
 
-        # Detect changes and UPDATE Redis Draft
+        # Detect changes and UPDATE Session State Draft
         changes_detected = []
-        new_redis_drafts = {} 
+        new_drafts = {} 
         
         df_edit = edited_df.set_index('User_ID')
         
@@ -303,8 +305,8 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
                         # 2. Apply Active Edit to All Targets
                         for target_id in target_uids:
                             target_id_str = str(target_id)
-                            if target_id_str not in new_redis_drafts: new_redis_drafts[target_id_str] = {}
-                            new_redis_drafts[target_id_str][item_key] = val_edit
+                            if target_id_str not in new_drafts: new_drafts[target_id_str] = {}
+                            new_drafts[target_id_str][item_key] = val_edit
 
         # --- PASS 2: Detect PASSIVE/EXISTING DRAFTS (Fill gaps) ---
         # If a value differs from Moodle but wasn't "Just Edited" (i.e. it's a preserved draft), keep it.
@@ -329,12 +331,12 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
                     # If this row differs from moodle, it's a pending change.
                     if abs(val_edit - orig_moodle_val) > 0.001:
                         # Add to draft only if PASS 1 didn't already touch this cell
-                        if u_id not in new_redis_drafts or item_key not in new_redis_drafts[u_id]:
-                            if u_id not in new_redis_drafts: new_redis_drafts[u_id] = {}
-                            new_redis_drafts[u_id][item_key] = val_edit
+                        if u_id not in new_drafts or item_key not in new_drafts[u_id]:
+                            if u_id not in new_drafts: new_drafts[u_id] = {}
+                            new_drafts[u_id][item_key] = val_edit
 
         # --- GENERATE CHANGES DETECTED LIST (From the final consolidated drafts) ---
-        for u_id, items in new_redis_drafts.items():
+        for u_id, items in new_drafts.items():
             for item_key, val_new in items.items():
                 # Find display info
                 orig_val = moodle_vals.get(u_id, {}).get(item_key, 0.0)
@@ -358,12 +360,10 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
                     'reason': '' # Reason tracking is complex with propagation, simplifying to empty for auto-prop
                 })
 
-        # Save current diffs back to Redis
-        if new_redis_drafts != existing_drafts:
-            # Only rerun if the save was SUCCESSFUL (True)
-            # If Redis is down (False), we just proceed to render the UI with current in-memory changes
-            if redis.set_json(draft_key, new_redis_drafts):
-                st.rerun()
+        # Save current diffs back to Session State
+        if new_drafts != existing_drafts:
+            st.session_state['drafts_by_course'][course_id] = new_drafts
+            st.rerun()
 
         # Review Pending Changes
         if changes_detected:
@@ -379,7 +379,8 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
                 col_clear, _ = st.columns([1, 4])
                 with col_clear:
                     if st.button("🗑️ Clear All Drafts", type="secondary"):
-                        redis.delete(draft_key)
+                        if course_id in st.session_state['drafts_by_course']:
+                            del st.session_state['drafts_by_course'][course_id]
                         st.rerun()
                 
                 # Convert to editable DF for selective sync
@@ -433,17 +434,18 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
                             if uid_s not in overridden_drafts: overridden_drafts[uid_s] = {}
                             overridden_drafts[uid_s][row['item_key']] = float(row['New Mark'])
 
-                # Update Redis drafts if user did manual overrides in the sync table
+                # Update Session State drafts if user did manual overrides in the sync table
                 if overridden_drafts:
-                    current_redis = redis.get_json(draft_key) or {}
+                    if course_id not in st.session_state['drafts_by_course']:
+                        st.session_state['drafts_by_course'][course_id] = {}
+                    
+                    current_drafts = st.session_state['drafts_by_course'][course_id]
                     changed_any = False
                     for u, items in overridden_drafts.items():
                         for k, v in items.items():
-                            if u in current_redis and k in current_redis[u] and abs(current_redis[u][k] - v) > 0.001:
-                                current_redis[u][k] = v
+                            if u in current_drafts and k in current_drafts[u] and abs(current_drafts[u][k] - v) > 0.001:
+                                current_drafts[u][k] = v
                                 changed_any = True
-                    if changed_any:
-                        redis.set_json(draft_key, current_redis)
 
             # Push to Moodle button
             st.markdown("---")
@@ -474,14 +476,14 @@ def render_detailed_results(df, total_target, weight_config, course_id, group_ma
                                 success_count += 1
                                 
                                 # Clear local draft for this specific user/item
-                                current_drafts = redis.get_json(draft_key) or {}
-                                item_k = change['item_key']
-                                uid_str = str(change['user_id'])
-                                if uid_str in current_drafts and item_k in current_drafts[uid_str]:
-                                    del current_drafts[uid_str][item_k]
-                                    if not current_drafts[uid_str]: del current_drafts[uid_str]
-                                
-                                redis.set_json(draft_key, current_drafts)
+                                if course_id in st.session_state['drafts_by_course']:
+                                    current_drafts = st.session_state['drafts_by_course'][course_id]
+                                    item_k = change['item_key']
+                                    uid_str = str(change['user_id'])
+                                    if uid_str in current_drafts and item_k in current_drafts[uid_str]:
+                                        del current_drafts[uid_str][item_k]
+                                        if not current_drafts[uid_str]:
+                                            del current_drafts[uid_str]
                             else:
                                 st.error(f"❌ {change['name']}: {message}")
                                 fail_count += 1

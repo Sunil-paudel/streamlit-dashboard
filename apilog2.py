@@ -242,11 +242,12 @@ st.markdown("""
 student_results, teacher_results = calculate_student_metrics(users_raw, weight_config, course_id, submission_data, quiz_attempts_raw)
 moodle_baseline_list = [r.copy() for r in student_results] # Keep clean Moodle baseline for Results sync logic
 
-# --- INJECT REDIS DRAFTS INTO MAIN PIPELINE ---
-from redis_client import get_redis, PREFIX_DRAFT
-redis_client = get_redis()
-draft_key = f"{PREFIX_DRAFT}{course_id}"
-all_drafts = redis_client.get_json(draft_key) or {} # user_id -> {item_key: val}
+# --- INJECT SESSION STATE DRAFTS INTO MAIN PIPELINE ---
+# Initialize drafts_by_course if not exists
+if 'drafts_by_course' not in st.session_state:
+    st.session_state['drafts_by_course'] = {}
+
+all_drafts = st.session_state['drafts_by_course'].get(course_id, {}) # user_id -> {item_key: val}
 
 if all_drafts:
     for row in student_results:
